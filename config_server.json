@@ -1,7 +1,6 @@
 {
-  "mode": "n-1",
-  "receive_port": 53,
-  "recv_domains": [],
+  "registration_port": 5300,
+  "bridge_port": 5301,
   "h_out_address": "127.0.0.1:443",
   "info_decryption_pass": ""
 }
