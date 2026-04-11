@@ -1,16 +1,9 @@
 {
-  "mode": "n-1",
-  "dns_ips": [],
-  "send_domains": [],
+  "server_registration_address": "SERVER_IP:5300",
+  "xray_bridge_inbound": "127.0.0.1:5302",
+  "h_in_address": "127.0.0.1:10443",
   "fake_send_ip": "",
   "fake_send_port": 443,
-  "h_in_address": "127.0.0.1:10443",
-  "max_domain_len": 253,
-  "max_sub_len": 63,
-  "retries": 1,
-  "send_sock_numbers": 512,
   "my_public_ip": "ezping",
-  "send_query_type_int": 1,
-  "packets_send_interval": 0.001,
   "info_encryption_pass": ""
 }
