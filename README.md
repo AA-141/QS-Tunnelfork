@@ -11,16 +11,19 @@ QS-Tunnel is an asymmetric UDP tunnel designed to bypass deep packet inspection 
 ## Table of Contents
 
 1. [How It Works](#how-it-works)
-2. [Prerequisites](#prerequisites)
-3. [Installation](#installation)
-4. [Server Configuration](#server-configuration)
-5. [Client Configuration](#client-configuration)
-6. [Running](#running)
-7. [Xray Wiring](#xray-wiring)
-8. [VPN Backend Integration](#vpn-backend-integration)
-9. [Testing Tools](#testing-tools)
-10. [Limitations](#limitations)
-11. [Support](#support)
+2. [Quick Start Guides](#quick-start-guides)
+   - [Setup A — WireGuard (simplest)](#setup-a--wireguard-simplest)
+   - [Setup B — xhttp-h3 with v2rayN on Windows](#setup-b--xhttp-h3-with-v2rayn-on-windows)
+3. [Prerequisites](#prerequisites)
+4. [Installation](#installation)
+5. [Server Configuration](#server-configuration)
+6. [Client Configuration](#client-configuration)
+7. [Running](#running)
+8. [Xray Wiring](#xray-wiring)
+9. [VPN Backend Integration](#vpn-backend-integration)
+10. [Testing Tools](#testing-tools)
+11. [Limitations](#limitations)
+12. [Support](#support)
 
 ---
 
@@ -82,6 +85,333 @@ The 12-byte info payload (encrypted with `SHA-256(info_encryption_pass)`) contai
 | 4–5   | Client open UDP port (for spoofed replies) |
 | 6–9   | Desired spoof source IPv4 (`fake_send_ip`) |
 | 10–11 | Desired spoof source port (`fake_send_port`) |
+
+---
+
+## Quick Start Guides
+
+These step-by-step guides each cover a complete, working setup. Pick the one that fits your situation.
+
+> **Before you start** — you need two things no matter which guide you follow:
+> 1. A Linux VPS **abroad** (outside the censorship zone) where you run QS-Tunnel server and the VPN server.
+> 2. A **purchased VLESS/WebSocket proxy URL** (cheap, any provider) — this is used **only** for QS-Tunnel's upload path. It does **not** carry your VPN traffic; it is just a tiny signalling channel.
+
+---
+
+### Setup A — WireGuard (simplest)
+
+WireGuard encrypts and routes your traffic. QS-Tunnel provides the asymmetric transport that carries it past censorship.
+
+```
+Your apps  →  WireGuard client  →  QS-Tunnel client  →  (VLESS upload)  →  QS-Tunnel server  →  WireGuard server
+                                         ↑
+                               replies arrive here via IP-spoofed UDP (free, no VLESS quota used)
+```
+
+**What you need:**
+- Linux VPS with root access and UDP ports `5300` and `5301` open
+- WireGuard installed on the VPS (`apt install wireguard`)
+- WireGuard client on your PC ([wireguard.com/install](https://www.wireguard.com/install/))
+- Python ≥ 3.12 on both machines
+- A purchased VLESS/WS URL for the QS-Tunnel upload path
+
+---
+
+#### Step 1 — Server: set up WireGuard
+
+```bash
+# Generate server keys
+wg genkey | tee /etc/wireguard/server_private.key | wg pubkey > /etc/wireguard/server_public.key
+cat /etc/wireguard/server_public.key   # ← you will need this on the client
+```
+
+Create `/etc/wireguard/wg0.conf` (see `examples/wireguard/wg0_server.conf` for the full template):
+
+```ini
+[Interface]
+PrivateKey = <SERVER_PRIVATE_KEY>
+Address = 10.0.0.1/24
+ListenPort = 51820
+PostUp   = iptables -A FORWARD -i %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
+
+[Peer]
+PublicKey = <CLIENT_PUBLIC_KEY>    # fill in after Step 3
+AllowedIPs = 10.0.0.2/32
+```
+
+Enable IP forwarding so the server can route internet traffic for clients:
+
+```bash
+echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf && sysctl -p
+```
+
+Start WireGuard:
+
+```bash
+sudo wg-quick up wg0
+```
+
+---
+
+#### Step 2 — Server: configure and start QS-Tunnel
+
+In `config_server.json` (or use `examples/wireguard/qs_tunnel_server.jsonc`):
+
+```json
+{
+  "registration_port": 5300,
+  "bridge_port": 5301,
+  "h_out_address": "127.0.0.1:51820",
+  "info_decryption_pass": "your-shared-secret"
+}
+```
+
+`h_out_address` points QS-Tunnel at the local WireGuard listener (`ListenPort` from Step 1).
+
+```bash
+sudo python main_server.py
+```
+
+---
+
+#### Step 3 — Client: generate WireGuard keys
+
+**Windows (PowerShell, in the WireGuard install folder or any directory with `wg` in PATH):**
+```powershell
+wg genkey | Out-File -Encoding ASCII client_private.key
+Get-Content client_private.key | wg pubkey | Out-File -Encoding ASCII client_public.key
+Get-Content client_public.key   # ← copy this to the server's [Peer] PublicKey
+```
+
+**Linux:**
+```bash
+wg genkey | tee client_private.key | wg pubkey > client_public.key
+cat client_public.key   # ← copy this to the server's [Peer] PublicKey
+```
+
+After copying the client public key to the server, reload WireGuard:
+```bash
+sudo wg syncconf wg0 <(wg-quick strip wg0)
+```
+
+---
+
+#### Step 4 — Client: configure WireGuard
+
+In WireGuard for Windows, click **Add Tunnel → Create from scratch** (or create a `.conf` file on Linux). Use `examples/wireguard/wg0_client.conf` as a template:
+
+```ini
+[Interface]
+PrivateKey = <CLIENT_PRIVATE_KEY>
+Address = 10.0.0.2/32
+DNS = 1.1.1.1
+
+[Peer]
+PublicKey = <SERVER_PUBLIC_KEY>
+AllowedIPs = 0.0.0.0/0, ::/0
+Endpoint = 127.0.0.1:10443
+```
+
+> **Why `127.0.0.1:10443`?** The `Endpoint` must point to QS-Tunnel's `h_in_address`. QS-Tunnel is listening there locally and will relay the WireGuard packets to the server. Do **not** put the real server IP here.
+
+---
+
+#### Step 5 — Client: configure QS-Tunnel
+
+In `config_client.json` (or use `examples/wireguard/qs_tunnel_client.jsonc`):
+
+```json
+{
+  "server_registration_address": "YOUR_SERVER_IP:5300",
+  "vless_config": "vless://UUID@HOST:PORT?encryption=none&security=tls&type=ws&path=%2F",
+  "bridge_address": "YOUR_SERVER_IP:5301",
+  "xray_bridge_inbound": "",
+  "h_in_address": "127.0.0.1:10443",
+  "fake_send_ip": "1.1.1.1",
+  "fake_send_port": 443,
+  "my_public_ip": "ezping",
+  "info_encryption_pass": "your-shared-secret"
+}
+```
+
+Key fields:
+
+| Field | What to set |
+|---|---|
+| `server_registration_address` | Your VPS public IP and port 5300 |
+| `vless_config` | Your purchased VLESS/WS URL (for the upload path only) |
+| `bridge_address` | Your VPS public IP and port 5301 |
+| `h_in_address` | Must match the WireGuard `Endpoint` (`127.0.0.1:10443`) |
+| `fake_send_ip` / `fake_send_port` | A stable public IP:port to open a NAT hole through (e.g. `1.1.1.1:443`). The server spoofs download replies as if they come from here. |
+| `info_encryption_pass` | Must match `info_decryption_pass` on the server |
+
+---
+
+#### Step 6 — Client: start QS-Tunnel, then activate WireGuard
+
+```bash
+python main_client.py
+```
+
+Once QS-Tunnel prints `[main] All tasks started — tunnel is running`, click **Activate** in WireGuard for Windows (or `sudo wg-quick up wg0` on Linux). Your traffic now flows through the tunnel.
+
+---
+
+### Setup B — xhttp-h3 with v2rayN on Windows
+
+Use this setup if you already run v2rayN on Windows and want to use Xray-core's xhttp-h3 (HTTP/3 over QUIC) as the VPN layer.
+
+> **Two separate roles, two separate configs:**
+> - **VPN layer (xhttp-h3):** Xray-core with xhttp-h3 transport — this encrypts and routes your traffic. Configured in v2rayN as a custom server.
+> - **Upload transport (VLESS):** A cheap VLESS/WS proxy URL passed to QS-Tunnel's `vless_config`. Used only to carry the tiny upload signal. This is completely separate from the xhttp-h3 server.
+
+```
+Your apps
+    │ (system proxy / TUN)
+    ▼
+v2rayN  ← uses the custom xhttp-h3 Xray config
+    │ xhttp-h3 UDP → 127.0.0.1:10443  (QS-Tunnel's h_in_address)
+    ▼
+QS-Tunnel client
+    │ upload: VLESS/WS → purchased proxy → YOUR_SERVER_IP:5301
+    ▼
+QS-Tunnel server
+    │ → 127.0.0.1:443  (h_out_address = Xray xhttp-h3 server)
+    ▼
+Xray server (xhttp-h3 inbound)
+    │ direct internet
+    ▼
+Destination
+```
+
+---
+
+#### Step 1 — Server: generate a TLS certificate
+
+```bash
+# Self-signed (quick); replace CN with your domain or IP
+openssl req -x509 -newkey rsa:2048 \
+  -keyout /etc/xray/key.pem \
+  -out /etc/xray/cert.pem \
+  -days 365 -nodes \
+  -subj "/CN=YOUR_SERVER_DOMAIN_OR_IP"
+
+# Get the SHA-256 fingerprint (needed in the client config):
+openssl x509 -in /etc/xray/cert.pem -noout -fingerprint -sha256 \
+  | sed 's/://g' | awk -F= '{print $2}'
+```
+
+Note the fingerprint — you will paste it into the client config as `pinnedPeerCertSha256`.
+
+---
+
+#### Step 2 — Server: install Xray and configure xhttp-h3
+
+Install Xray-core:
+```bash
+bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+```
+
+Copy `examples/xray_core_xhttp_h3/xhttp_h3_server.jsonc` to `/etc/xray/config.json` and fill in every `// set` placeholder:
+
+| Placeholder | Value |
+|---|---|
+| `listen` | `"0.0.0.0"` |
+| `port` | `443` (or any free UDP port — keep it consistent with `h_out_address`) |
+| `id` | a new UUID: `python3 -c "import uuid; print(uuid.uuid4())"` |
+| `email` | any label, e.g. `"user@example.com"` |
+| `serverName` | your server domain or IP |
+| `certificateFile` | `/etc/xray/cert.pem` |
+| `keyFile` | `/etc/xray/key.pem` |
+| `host` (xhttpSettings) | your server domain or IP |
+| `password` (salamander) | a random string, e.g. `"sal-secret-123"` |
+
+Start Xray:
+```bash
+sudo systemctl start xray
+```
+
+Open the firewall for the port you chose (e.g. 443 UDP):
+```bash
+ufw allow 443/udp   # or use your cloud provider's security group
+```
+
+---
+
+#### Step 3 — Server: configure and start QS-Tunnel
+
+In `config_server.json`:
+
+```json
+{
+  "registration_port": 5300,
+  "bridge_port": 5301,
+  "h_out_address": "127.0.0.1:443",
+  "info_decryption_pass": "your-shared-secret"
+}
+```
+
+`h_out_address` must match the Xray server's listen `port` from Step 2.
+
+```bash
+sudo python main_server.py
+```
+
+---
+
+#### Step 4 — Client (Windows): add custom config to v2rayN
+
+1. Open v2rayN.
+2. Click **Servers** → **Add custom server**.
+3. Paste the content of `examples/xray_core_xhttp_h3/xhttp_h3_client.jsonc` into the editor (or import the file).
+4. Fill in every `// set` placeholder:
+
+| Placeholder | Value |
+|---|---|
+| `address` | `"127.0.0.1"` — QS-Tunnel's `h_in_address` host |
+| `port` | `10443` — QS-Tunnel's `h_in_address` port |
+| `id` | the UUID you set on the server (Step 2) |
+| `serverName` | your server domain or IP |
+| `pinnedPeerCertSha256` | the fingerprint from Step 1 |
+| `host` (xhttpSettings) | your server domain or IP |
+| `password` (salamander) | same as server (Step 2) |
+
+> **Why `address = "127.0.0.1"` and `port = 10443`?** v2rayN sends its xhttp-h3 packets to that address. QS-Tunnel is listening there and relays the packets to the server. The `serverName` / TLS fields still refer to the real server — TLS uses SNI, not the destination IP.
+
+5. Set this server as **active** in v2rayN (right-click → **Set as active server**).
+
+---
+
+#### Step 5 — Client: configure QS-Tunnel
+
+In `config_client.json`:
+
+```json
+{
+  "server_registration_address": "YOUR_SERVER_IP:5300",
+  "vless_config": "vless://UUID@HOST:PORT?encryption=none&security=tls&type=ws&path=%2F",
+  "bridge_address": "YOUR_SERVER_IP:5301",
+  "xray_bridge_inbound": "",
+  "h_in_address": "127.0.0.1:10443",
+  "fake_send_ip": "1.1.1.1",
+  "fake_send_port": 443,
+  "my_public_ip": "ezping",
+  "info_encryption_pass": "your-shared-secret"
+}
+```
+
+`vless_config` is the **transport VLESS** — a separate VLESS/WS proxy for QS-Tunnel's upload path only. It is **not** the xhttp-h3 server you set up in Steps 1–2. Paste a purchased WS/TLS VLESS URL here.
+
+---
+
+#### Step 6 — Client: start QS-Tunnel, then enable v2rayN proxy
+
+```bash
+python main_client.py
+```
+
+Once QS-Tunnel prints `[main] All tasks started — tunnel is running`, switch v2rayN to **System Proxy** mode (right-click the tray icon → **System Proxy → Automatically configure system proxy**), or enable TUN mode for full-device routing.
 
 ---
 
@@ -243,9 +573,9 @@ Add your existing VLESS outbound and routing rules so that traffic tagged `qs-br
 QS-Tunnel is a **UDP forwarder** only. It does not encrypt data or handle routing by itself. You need a reliable UDP-based VPN protocol to carry actual traffic through the tunnel.
 
 Recommended backends (example configs in `examples/`):
+- **WireGuard** — simple, widely supported UDP VPN. See [Setup A](#setup-a--wireguard-simplest) for a complete walkthrough and `examples/wireguard/` for ready-to-use config templates.
 - **Hysteria 2** — high-performance QUIC-based protocol (`examples/xray_core_hysteria/`)
-- **xhttp-h3** — HTTP/3-based transport via Xray-core (`examples/xray_core_xhttp_h3/`)
-- **WireGuard** — straightforward UDP VPN
+- **xhttp-h3** — HTTP/3-based transport via Xray-core (`examples/xray_core_xhttp_h3/`). See [Setup B](#setup-b--xhttp-h3-with-v2rayn-on-windows) for a complete v2rayN walkthrough.
 
 ### Wiring diagram
 

@@ -1,0 +1,24 @@
+{
+  "server_registration_address": "YOUR_SERVER_IP:5300",
+
+  // Option A (recommended): paste your purchased VLESS WebSocket URL here.
+  // QS-Tunnel will handle the connection itself — no local Xray needed.
+  "vless_config": "vless://UUID@HOST:PORT?encryption=none&security=tls&type=ws&path=%2F",
+  "bridge_address": "YOUR_SERVER_IP:5301",
+  "xray_bridge_inbound": "",   // leave empty when vless_config is set
+
+  // QS-Tunnel listens here for WireGuard client UDP packets.
+  // The WireGuard client Endpoint must match this address.
+  "h_in_address": "127.0.0.1:10443",
+
+  // The server will spoof reply packets as if they come from fake_send_ip:fake_send_port.
+  // QS-Tunnel also sends UDP keep-alives to this address to keep your NAT mapping open.
+  // Use any stable public UDP endpoint (e.g. Cloudflare DNS: 1.1.1.1:443).
+  "fake_send_ip": "1.1.1.1",
+  "fake_send_port": 443,
+
+  // Your public IPv4, or "ezping" / "ipnumberia" / "ipmyp" for auto-detection.
+  "my_public_ip": "ezping",
+
+  "info_encryption_pass": "your-shared-secret"   // must match server's info_decryption_pass
+}

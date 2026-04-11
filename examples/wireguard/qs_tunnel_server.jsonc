@@ -1,0 +1,6 @@
+{
+  "registration_port": 5300,
+  "bridge_port": 5301,
+  "h_out_address": "127.0.0.1:51820",   // WireGuard server's ListenPort
+  "info_decryption_pass": "your-shared-secret"  // must match client's info_encryption_pass
+}
