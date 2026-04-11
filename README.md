@@ -142,8 +142,10 @@ Edit `config_client.json`:
 
 ```json
 {
-  "server_registration_address": "SERVER_IP:5300",
-  "xray_bridge_inbound": "127.0.0.1:5302",
+  "server_registration_address": "YOUR_SERVER_IP:5300",
+  "vless_config": "",
+  "bridge_address": "YOUR_SERVER_IP:5301",
+  "xray_bridge_inbound": "",
   "h_in_address": "127.0.0.1:10443",
   "fake_send_ip": "1.2.3.4",
   "fake_send_port": 443,
@@ -155,12 +157,16 @@ Edit `config_client.json`:
 | Key | Description |
 |-----|-------------|
 | `server_registration_address` | `ip:port` of QS-Tunnel server's registration listener |
-| `xray_bridge_inbound` | `ip:port` of the local Xray `dokodemo-door` UDP inbound |
+| `vless_config` | **(Recommended)** Full VLESS URL from your purchased config — QS-Tunnel connects to the VLESS server directly, no separate Xray needed |
+| `bridge_address` | `ip:port` of the QS-Tunnel server's bridge listener (e.g. `YOUR_SERVER_IP:5301`). Used when `vless_config` is set. The VLESS server will proxy UDP to this address |
+| `xray_bridge_inbound` | **(Advanced / legacy)** `ip:port` of a local Xray `dokodemo-door` UDP inbound. Leave empty when using `vless_config` |
 | `h_in_address` | `ip:port` where the client listens for outbound data from the local VPN client |
-| `fake_send_ip` | IP the server should spoof as the source of replies. Must be an IP your NAT already has an open mapping for (typically `fake_send_ip` of a DNS resolver or any IP you send keep-alives to) |
+| `fake_send_ip` | IP the server should spoof as the source of replies. Must be an IP your NAT already has an open mapping for (typically a DNS resolver or any IP you send keep-alives to) |
 | `fake_send_port` | Source port the server should use when spoofing replies |
 | `my_public_ip` | Your public IPv4, or `"ezping"` / `"ipnumberia"` / `"ipmyp"` for auto-detection |
 | `info_encryption_pass` | Shared secret matching server's `info_decryption_pass` |
+
+> **Note:** Set **both** `vless_config` (a valid VLESS URL) **and** `bridge_address` (your server's `IP:bridge_port`) to enable built-in VLESS mode. If either is missing or invalid, QS-Tunnel falls back to `xray_bridge_inbound` mode. Only one mode is used at a time.
 
 ---
 
@@ -181,13 +187,34 @@ python main_client.py
 
 ## Xray Wiring
 
-QS-Tunnel does **not** manage or configure Xray. You set up and run Xray independently. The only requirement is:
+### Option A — Built-in VLESS client (recommended, no Xray config needed)
 
-**On the client side** — Xray must have a `dokodemo-door` UDP inbound on the address set in `xray_bridge_inbound` (default `127.0.0.1:5302`), with its traffic routed through your VLESS outbound toward the purchased Xray server.
+Paste your purchased VLESS URL directly into `vless_config` and set `bridge_address` to your QS-Tunnel server's `IP:bridge_port`. QS-Tunnel opens the WebSocket connection itself, sends packets via the VLESS protocol, and the purchased server proxies them to your bridge.
 
-**On the server side (your purchased Xray server)** — its outbound for the traffic coming from QS-Tunnel must forward UDP to `QS_TUNNEL_SERVER_IP:bridge_port` (default `bridge_port` 5301). Because you do not own the purchased Xray server, you will need to configure it with an outbound rule that forwards to the QS-Tunnel server you *do* control.
+Example `config_client.json` with a WS/plain VLESS config:
 
-### Minimal client-side Xray snippet (dokodemo-door inbound)
+```json
+{
+  "vless_config": "vless://eb4c65c7-0a09-4750-80e8-8cde3e026d0f@ezterar.popol.cfd:8443?encryption=none&security=none&type=ws&path=%2F",
+  "bridge_address": "YOUR_SERVER_IP:5301",
+  ...
+}
+```
+
+Supported transports: `type=ws` (plain WebSocket) and `type=ws` with `security=tls` or `security=reality`.
+
+### Option B — External Xray with dokodemo-door (advanced)
+
+If you prefer to manage Xray yourself, leave `vless_config` empty and set `xray_bridge_inbound` to the address of a local Xray `dokodemo-door` UDP inbound:
+
+```json
+{
+  "xray_bridge_inbound": "127.0.0.1:5302",
+  ...
+}
+```
+
+Minimal Xray inbound snippet (add to your existing Xray config):
 
 ```json
 {
@@ -208,8 +235,6 @@ QS-Tunnel does **not** manage or configure Xray. You set up and run Xray indepen
 ```
 
 Add your existing VLESS outbound and routing rules so that traffic tagged `qs-bridge-in` exits via the VLESS outbound.
-
-> **Note:** The `address`/`port` inside `dokodemo-door` settings sets the destination the dokodemo-door forwards to — this should be the QS-Tunnel server's `bridge_port`. Adjust to match your setup.
 
 ---
 
