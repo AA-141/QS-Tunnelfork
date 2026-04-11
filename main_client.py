@@ -14,7 +14,7 @@ def bytes_xor(data: bytes, key: bytes) -> bytes:
     return bytes(data[i] ^ key[i % len(key)] for i in range(len(data)))
 
 
-def create_v4_udp_dgram_socket(blocking: bool, bind_addr=None) -> socket.socket:
+def create_v4_udp_dgram_socket(blocking: bool, bind_addr: tuple[str, int] | None = None) -> socket.socket:
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.setblocking(blocking)
     if bind_addr is not None:
