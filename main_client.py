@@ -6,8 +6,11 @@ import os
 import sys
 import hashlib
 import re
+import ssl
 import uuid as uuid_module
 from urllib.parse import urlparse, parse_qs, unquote
+
+import aiohttp
 
 CLIENT_ID_WIDTH = 3
 
@@ -88,16 +91,31 @@ vless_cfg_str = config.get("vless_config", "").strip()
 bridge_addr_str = config.get("bridge_address", "").strip()
 xray_bridge_str = config.get("xray_bridge_inbound", "").strip()
 
-use_builtin_vless = bool(vless_cfg_str and not vless_cfg_str.startswith("vless://UUID") and bridge_addr_str and not bridge_addr_str.startswith("QS_"))
+# Try to parse the VLESS URL and bridge address to decide whether built-in VLESS mode is usable.
+# Both vless_config and bridge_address must be non-empty and well-formed; otherwise fall back
+# to the dokodemo-door (xray_bridge_inbound) path.
+_vless_info_tentative = None
+_bridge_host_tentative = None
+_bridge_port_tentative = None
+if vless_cfg_str and bridge_addr_str:
+    try:
+        _vless_info_tentative = parse_vless_url(vless_cfg_str)
+        _bh, _bp = bridge_addr_str.rsplit(":", 1)
+        _bridge_host_tentative = _bh
+        _bridge_port_tentative = int(_bp)
+    except Exception:
+        _vless_info_tentative = None
+
+use_builtin_vless = _vless_info_tentative is not None
 
 if use_builtin_vless:
     print("[init] Upload mode: built-in VLESS WebSocket client")
-    vless_info = parse_vless_url(vless_cfg_str)
+    vless_info = _vless_info_tentative
+    bridge_host = _bridge_host_tentative
+    bridge_port_num = _bridge_port_tentative
     print(f"[init] VLESS server: {vless_info['host']}:{vless_info['port']}, "
           f"transport={vless_info['transport']}, security={vless_info['security']}, "
           f"path={vless_info['path']!r}")
-    bridge_host, bridge_port_str = bridge_addr_str.rsplit(":", 1)
-    bridge_port_num = int(bridge_port_str)
     print(f"[init] QS-Tunnel bridge target: {bridge_host}:{bridge_port_num}")
     xray_bridge_addr = None
     xray_bridge_socket = None
@@ -141,7 +159,6 @@ vless_send_queue: asyncio.Queue[bytes] = asyncio.Queue()
 
 async def _vless_send_loop(ws, is_tls: bool):
     """Read packets from vless_send_queue and send them over the WebSocket."""
-    import aiohttp
     header_sent = False
     print("[vless] Send loop started")
     while True:
@@ -165,7 +182,6 @@ async def _vless_drain_loop(ws):
     from the VLESS server are not meaningful for us — but we must drain them
     to avoid back-pressure that would stall the connection.
     """
-    import aiohttp
     header_received = False
     print("[vless] Drain loop started")
     async for msg in ws:
@@ -187,14 +203,12 @@ async def vless_manager():
     Maintains a persistent VLESS WebSocket UDP connection.
     Reconnects automatically on failure.
     """
-    import aiohttp
     security = vless_info["security"]
     scheme = "wss" if security in ("tls", "reality") else "ws"
     ws_url = f"{scheme}://{vless_info['host']}:{vless_info['port']}{vless_info['path']}"
     headers = {"Host": vless_info["ws_host_header"]}
     ssl_context = None
     if scheme == "wss":
-        import ssl
         ssl_context = ssl.create_default_context()
         ssl_context.check_hostname = False
         ssl_context.verify_mode = ssl.CERT_NONE
@@ -363,7 +377,6 @@ async def nat_keep_alive():
 
 
 async def fetch_ip(url: str):
-    import aiohttp
     print(f"[fetch_ip] Fetching public IP from {url}")
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as response:

@@ -1,7 +1,7 @@
 {
-  "server_registration_address": "SERVER_IP:5300",
-  "vless_config": "vless://UUID@host:port?encryption=none&security=none&type=ws&path=%2F",
-  "bridge_address": "QS_TUNNEL_SERVER_IP:5301",
+  "server_registration_address": "YOUR_SERVER_IP:5300",
+  "vless_config": "",
+  "bridge_address": "YOUR_SERVER_IP:5301",
   "xray_bridge_inbound": "",
   "h_in_address": "127.0.0.1:10443",
   "fake_send_ip": "",

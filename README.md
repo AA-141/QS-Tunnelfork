@@ -142,9 +142,9 @@ Edit `config_client.json`:
 
 ```json
 {
-  "server_registration_address": "SERVER_IP:5300",
-  "vless_config": "vless://UUID@host:port?encryption=none&security=none&type=ws&path=%2F",
-  "bridge_address": "QS_TUNNEL_SERVER_IP:5301",
+  "server_registration_address": "YOUR_SERVER_IP:5300",
+  "vless_config": "",
+  "bridge_address": "YOUR_SERVER_IP:5301",
   "xray_bridge_inbound": "",
   "h_in_address": "127.0.0.1:10443",
   "fake_send_ip": "1.2.3.4",
@@ -166,7 +166,7 @@ Edit `config_client.json`:
 | `my_public_ip` | Your public IPv4, or `"ezping"` / `"ipnumberia"` / `"ipmyp"` for auto-detection |
 | `info_encryption_pass` | Shared secret matching server's `info_decryption_pass` |
 
-> **Note:** Exactly one of `vless_config`+`bridge_address` **or** `xray_bridge_inbound` must be configured. If both are present, `vless_config` takes priority.
+> **Note:** Set **both** `vless_config` (a valid VLESS URL) **and** `bridge_address` (your server's `IP:bridge_port`) to enable built-in VLESS mode. If either is missing or invalid, QS-Tunnel falls back to `xray_bridge_inbound` mode. Only one mode is used at a time.
 
 ---
 
