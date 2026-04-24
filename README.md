@@ -16,6 +16,7 @@ This README is quick-start first. Advanced details are in `examples/` and script
 - Python `3.12+` on client and server
 - A purchased **VLESS WebSocket** URL (used only for upload path)
 - A UDP VPN backend (WireGuard recommended)
+- Non-CGNAT client internet (public UDP source port should stay stable)
 
 > If your internet is behind CGNAT, spoofed replies may fail.
 
@@ -67,6 +68,7 @@ Most important fields:
 - `bridge_address`: server `IP:bridge_port` (usually `YOUR_SERVER_IP:5301`)
 - `h_in_address`: where your VPN client sends UDP locally (must match your VPN client endpoint)
 - `info_encryption_pass`: must equal server secret
+- `fake_send_ip` / `fake_send_port`: spoofed source IP:port for server replies (commonly `1.1.1.1:443`)
 
 ### 5) Run
 
@@ -89,7 +91,7 @@ Then start your VPN client (for WireGuard, point endpoint to `127.0.0.1:10443`).
 1. VPN client sends UDP to QS-Tunnel client (`h_in_address`)
 2. QS-Tunnel client forwards upload via VLESS to server `bridge_port`
 3. QS-Tunnel server forwards to your local VPN server (`h_out_address`)
-4. Replies return as spoofed UDP from `fake_send_ip:fake_send_port` (typically something like `1.1.1.1:443` that your client can reliably send to, so NAT mapping stays predictable)
+4. Replies return as spoofed UDP whose source is `fake_send_ip:fake_send_port` (the server pretends packets come from this IP:port)
 
 ---
 
@@ -111,5 +113,5 @@ Then start your VPN client (for WireGuard, point endpoint to `127.0.0.1:10443`).
 
 ### Known limitations
 
-- CGNAT networks often break spoofed return traffic because source port mapping is unstable.
+- CGNAT networks often break spoofed return traffic because NAT rewrites client source ports unpredictably, so server replies cannot reliably target the correct mapped port.
 - VPS/network must allow outbound UDP IP spoofing.
