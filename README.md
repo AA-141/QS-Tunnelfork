@@ -89,7 +89,7 @@ Then start your VPN client (for WireGuard, point endpoint to `127.0.0.1:10443`).
 1. VPN client sends UDP to QS-Tunnel client (`h_in_address`)
 2. QS-Tunnel client forwards upload via VLESS to server `bridge_port`
 3. QS-Tunnel server forwards to your local VPN server (`h_out_address`)
-4. Replies return as spoofed UDP from `fake_send_ip:fake_send_port`
+4. Replies return as spoofed UDP from `fake_send_ip:fake_send_port` (a stable public IP:port pair used to keep NAT mapping predictable on the client side)
 
 ---
 
@@ -108,3 +108,8 @@ Then start your VPN client (for WireGuard, point endpoint to `127.0.0.1:10443`).
 - QS-Tunnel is a UDP forwarder, not an encryption protocol by itself.
 - Use a secure VPN backend (WireGuard / Hysteria / xhttp-h3).
 - Python `3.12+` required.
+
+### Known limitations
+
+- CGNAT networks often break spoofed return traffic because source port mapping is unstable.
+- VPS/network must allow outbound UDP IP spoofing.
