@@ -10,6 +10,8 @@ This README is quick-start first. Advanced details are in `examples/` and script
 
 ### 1) Requirements
 
+> **Important:** If your internet is behind CGNAT, spoofed return traffic often cannot reach your client because NAT rewrites source ports unpredictably.
+
 - Linux VPS (server) with root access
 - VPS/network must allow outbound UDP IP spoofing
 - UDP ports `5300` and `5301` open on server
@@ -17,8 +19,6 @@ This README is quick-start first. Advanced details are in `examples/` and script
 - A purchased **VLESS WebSocket** URL (used only for upload path)
 - A UDP VPN backend (WireGuard recommended)
 - Non-CGNAT client internet (public UDP source port should stay stable)
-
-> If your internet is behind CGNAT, spoofed return traffic often cannot reach your client because NAT rewrites source ports unpredictably.
 
 ### 2) Install
 
@@ -97,9 +97,9 @@ Then start your VPN client (for WireGuard, point endpoint to `127.0.0.1:10443`).
 
 ## Examples and advanced setups
 
-- WireGuard templates: `examples/wireguard/`
-- Xray xhttp-h3 templates: `examples/xray_core_xhttp_h3/`
-- Hysteria templates: `examples/xray_core_hysteria/`
+- WireGuard templates: `examples/wireguard/` (complete server/client and QS-Tunnel config samples)
+- Xray xhttp-h3 templates: `examples/xray_core_xhttp_h3/` (alternative setup for v2rayN/Xray-core)
+- Hysteria templates: `examples/xray_core_hysteria/` (Hysteria-based backend examples)
 - Spoofing test tool: `spoof_udp_test.py`
 - NAT keep-alive tool: `nat_keep_alive_test.py`
 
