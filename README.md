@@ -10,7 +10,7 @@ This README is quick-start first. Advanced details are in `examples/` and script
 
 ### 1) Requirements
 
-> **Important:** If your internet is behind CGNAT, spoofed return traffic often cannot reach your client because NAT rewrites source ports unpredictably. Verify your mapping behavior before setup with `python nat_keep_alive_test.py` (file is in the repo root).
+> **Important:** If your internet is behind CGNAT, spoofed return traffic often cannot reach your client because NAT rewrites source ports unpredictably. Verify your mapping behavior before setup with `python nat_keep_alive_test.py`.
 
 - Linux VPS (server) with root access
 - VPS/network must allow outbound UDP IP spoofing
@@ -113,5 +113,5 @@ Then start your VPN client (for WireGuard, point endpoint to `127.0.0.1:10443`).
 
 ### Known limitations
 
-- CGNAT client networks are not supported for reliable spoofed return traffic (see the **Important** warning in **1) Requirements**).
+- CGNAT client networks are not supported for reliable spoofed return traffic (see the **Important** warning under **Requirements** in **Quick start**).
 - VPS/network must allow outbound UDP IP spoofing.
