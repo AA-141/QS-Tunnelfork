@@ -18,7 +18,7 @@ This README is quick-start first. Advanced details are in `examples/` and script
 - A UDP VPN backend (WireGuard recommended)
 - Non-CGNAT client internet (public UDP source port should stay stable)
 
-> If your internet is behind CGNAT, spoofed replies may fail.
+> If your internet is behind CGNAT, spoofed return traffic often cannot reach your client because NAT rewrites source ports unpredictably.
 
 ### 2) Install
 
