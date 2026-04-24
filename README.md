@@ -113,5 +113,5 @@ Then start your VPN client (for WireGuard, point endpoint to `127.0.0.1:10443`).
 
 ### Known limitations
 
-- CGNAT networks often break spoofed return traffic because NAT rewrites client source ports unpredictably, so server replies cannot reliably target the correct mapped port.
+- CGNAT client networks are not supported for reliable spoofed return traffic (see the **Important** warning in Requirements).
 - VPS/network must allow outbound UDP IP spoofing.
