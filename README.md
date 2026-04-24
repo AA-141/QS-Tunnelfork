@@ -429,8 +429,11 @@ Once QS-Tunnel prints `[main] All tasks started — tunnel is running`, switch v
 - Python ≥ 3.12
 - `aiohttp` (only needed if using `"ezping"/"ipnumberia"/"ipmyp"` for automatic public IP detection)
 - A non-CGNAT internet connection (your public UDP port must remain stable)
-- A running Xray instance with a working VLESS outbound pointing to your purchased Xray server, and a `dokodemo-door` UDP inbound on `xray_bridge_inbound`
 - A VPN backend that speaks UDP: **Hysteria 2**, **WireGuard**, or **xhttp-h3 over QUIC** (see [VPN Backend Integration](#vpn-backend-integration))
+
+> Xray on the client is **optional**.  
+> - No Xray needed when you use built-in mode (`vless_config` + `bridge_address`) with `type=ws` and `security=none|tls`.  
+> - Xray is required only for advanced/legacy mode (`xray_bridge_inbound`) or non-WS VLESS transports.
 
 ---
 
@@ -441,6 +444,21 @@ git clone https://github.com/milad-mamandi/QS-Tunnel.git
 cd QS-Tunnel
 pip install -r requirements.txt   # client only: aiohttp
 ```
+
+### Easy server installer (WireGuard + QS-Tunnel service)
+
+On a fresh Ubuntu/Debian VPS, you can run:
+
+```bash
+sudo bash scripts/install_server.sh
+```
+
+The installer will:
+- Install dependencies
+- Generate WireGuard server/client keys and `/etc/wireguard/wg0.conf`
+- Enable IP forwarding
+- Write `config_server.json`
+- Create and start `qs-tunnel.service`
 
 ---
 
@@ -531,7 +549,11 @@ Example `config_client.json` with a WS/plain VLESS config:
 }
 ```
 
-Supported transports: `type=ws` (plain WebSocket) and `type=ws` with `security=tls` or `security=reality`.
+Supported built-in combinations:
+- `type=ws&security=none`
+- `type=ws&security=tls`
+
+If your provider requires non-WS transport or non-standard security modes, use **Option B** (external Xray).
 
 ### Option B — External Xray with dokodemo-door (advanced)
 

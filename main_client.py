@@ -44,8 +44,18 @@ def parse_vless_url(url: str) -> dict:
     if not host or not port:
         raise ValueError("VLESS URL missing host or port")
     params = parse_qs(parsed.query)
-    transport = params.get("type", ["tcp"])[0]
-    security = params.get("security", ["none"])[0]
+    transport = params.get("type", ["tcp"])[0].lower()
+    security = params.get("security", ["none"])[0].lower()
+    if transport != "ws":
+        raise ValueError(
+            f"Unsupported built-in VLESS transport type={transport!r}; only 'ws' is supported "
+            "without Xray core."
+        )
+    if security not in ("none", "tls"):
+        raise ValueError(
+            f"Unsupported built-in VLESS security={security!r}; only 'none' and 'tls' are supported "
+            "without Xray core."
+        )
     path = unquote(params.get("path", ["/"])[0])
     sni = params.get("sni", [host])[0]
     ws_host_header = params.get("host", [host])[0]
@@ -91,28 +101,19 @@ vless_cfg_str = config.get("vless_config", "").strip()
 bridge_addr_str = config.get("bridge_address", "").strip()
 xray_bridge_str = config.get("xray_bridge_inbound", "").strip()
 
-# Try to parse the VLESS URL and bridge address to decide whether built-in VLESS mode is usable.
-# Both vless_config and bridge_address must be non-empty and well-formed; otherwise fall back
-# to the dokodemo-door (xray_bridge_inbound) path.
-_vless_info_tentative = None
-_bridge_host_tentative = None
-_bridge_port_tentative = None
-if vless_cfg_str and bridge_addr_str:
-    try:
-        _vless_info_tentative = parse_vless_url(vless_cfg_str)
-        _bh, _bp = bridge_addr_str.rsplit(":", 1)
-        _bridge_host_tentative = _bh
-        _bridge_port_tentative = int(_bp)
-    except Exception:
-        _vless_info_tentative = None
-
-use_builtin_vless = _vless_info_tentative is not None
+use_builtin_vless = bool(vless_cfg_str)
 
 if use_builtin_vless:
+    if not bridge_addr_str:
+        raise ValueError("'bridge_address' must be set when 'vless_config' is configured")
+    vless_info = parse_vless_url(vless_cfg_str)
+    try:
+        _bh, _bp = bridge_addr_str.rsplit(":", 1)
+        bridge_host = _bh
+        bridge_port_num = int(_bp)
+    except Exception as e:
+        raise ValueError(f"Invalid 'bridge_address' format: {bridge_addr_str!r}") from e
     print("[init] Upload mode: built-in VLESS WebSocket client")
-    vless_info = _vless_info_tentative
-    bridge_host = _bridge_host_tentative
-    bridge_port_num = _bridge_port_tentative
     print(f"[init] VLESS server: {vless_info['host']}:{vless_info['port']}, "
           f"transport={vless_info['transport']}, security={vless_info['security']}, "
           f"path={vless_info['path']!r}")
@@ -122,7 +123,12 @@ if use_builtin_vless:
 else:
     print("[init] Upload mode: external Xray dokodemo-door (xray_bridge_inbound)")
     if not xray_bridge_str:
-        raise ValueError("Neither 'vless_config'+'bridge_address' nor 'xray_bridge_inbound' is configured")
+        if bridge_addr_str:
+            raise ValueError(
+                "'bridge_address' is set but 'vless_config' is empty; either set 'vless_config' "
+                "for built-in mode or set 'xray_bridge_inbound' for external Xray mode"
+            )
+        raise ValueError("Neither built-in VLESS ('vless_config') nor 'xray_bridge_inbound' is configured")
     xray_bridge_addr = (xray_bridge_str.rsplit(":", 1)[0], int(xray_bridge_str.rsplit(":", 1)[1]))
     xray_bridge_socket = create_v4_udp_dgram_socket(False, None)
     print(f"[init] Xray bridge inbound: {xray_bridge_addr}")
