@@ -10,13 +10,13 @@ This README is quick-start first. Advanced details are in `examples/` and script
 
 ### 1) Requirements
 
-> **Important:** If your internet is behind CGNAT, spoofed return traffic often cannot reach your client because NAT rewrites source ports unpredictably. Verify your mapping behavior with `nat_keep_alive_test.py` before setup.
+> **Important:** If your internet is behind CGNAT, spoofed return traffic often cannot reach your client because NAT rewrites source ports unpredictably. Verify your mapping behavior before setup with `python nat_keep_alive_test.py` (file is in the repo root).
 
 - Linux VPS (server) with root access
 - VPS/network must allow outbound UDP IP spoofing
 - UDP ports `5300` and `5301` open on server
 - Python `3.12+` on client and server
-- A purchased **VLESS WebSocket** URL (used only for upload path)
+- A **VLESS WebSocket** URL from your proxy/provider account (used only for upload path)
 - A UDP VPN backend (WireGuard recommended)
 - Non-CGNAT client internet (public UDP source port should stay stable)
 
