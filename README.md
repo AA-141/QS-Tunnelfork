@@ -89,7 +89,7 @@ Then start your VPN client (for WireGuard, point endpoint to `127.0.0.1:10443`).
 1. VPN client sends UDP to QS-Tunnel client (`h_in_address`)
 2. QS-Tunnel client forwards upload via VLESS to server `bridge_port`
 3. QS-Tunnel server forwards to your local VPN server (`h_out_address`)
-4. Replies return as spoofed UDP from `fake_send_ip:fake_send_port` (a stable public IP:port pair used to keep NAT mapping predictable on the client side)
+4. Replies return as spoofed UDP from `fake_send_ip:fake_send_port` (typically something like `1.1.1.1:443` that your client can reliably send to, so NAT mapping stays predictable)
 
 ---
 
