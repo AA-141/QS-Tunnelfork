@@ -14,6 +14,12 @@ import aiohttp
 
 CLIENT_ID_WIDTH = 3
 
+# Linux kernel value for SO_MARK; present as socket.SO_MARK on Python 3.12+ / Linux.
+_SO_MARK: int = getattr(socket, "SO_MARK", 36)
+
+# Forward declaration — overwritten after config is loaded below.
+fwmark: int = 0
+
 
 def bytes_xor(data: bytes, key: bytes) -> bytes:
     return bytes(data[i] ^ key[i % len(key)] for i in range(len(data)))
@@ -25,6 +31,39 @@ def create_v4_udp_dgram_socket(blocking: bool, bind_addr: tuple[str, int] | None
     if bind_addr is not None:
         s.bind(bind_addr)
     return s
+
+
+def _apply_fwmark(sock: socket.socket) -> None:
+    """Set SO_MARK on *sock* so the packet bypasses WireGuard routing rules.
+
+    Requires the process to have CAP_NET_ADMIN (or run as root) on Linux.
+    A failure is logged but not fatal so the tunnel still starts on platforms
+    that do not support SO_MARK (Windows, macOS).
+    """
+    if not fwmark:
+        return
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, _SO_MARK, fwmark)
+    except OSError as e:
+        print(
+            f"[fwmark] WARNING: Could not set SO_MARK={fwmark} on socket: {e}. "
+            "Run as root or grant CAP_NET_ADMIN for WireGuard bypass to work."
+        )
+
+
+def _make_aiohttp_connector() -> aiohttp.TCPConnector:
+    """Return a TCPConnector that stamps every TCP socket with SO_MARK when fwmark is set."""
+    if fwmark:
+        try:
+            return aiohttp.TCPConnector(
+                socket_options=[(socket.SOL_SOCKET, _SO_MARK, fwmark)]
+            )
+        except TypeError:
+            print(
+                "[fwmark] WARNING: Installed aiohttp does not support socket_options; "
+                "upgrade aiohttp for WireGuard bypass on TCP connections."
+            )
+    return aiohttp.TCPConnector()
 
 
 def parse_vless_url(url: str) -> dict:
@@ -101,6 +140,10 @@ except json.JSONDecodeError as e:
 
 info_encryption_pass = hashlib.sha256(config["info_encryption_pass"].encode()).digest()
 
+fwmark = int(config.get("fwmark", 0))
+if fwmark:
+    print(f"[init] fwmark={fwmark}: QS-Tunnel sockets will be marked to bypass WireGuard routing")
+
 client_id_bytes = os.urandom(CLIENT_ID_WIDTH)
 print(f"[init] client_id: {client_id_bytes.hex()}")
 
@@ -139,6 +182,7 @@ else:
         raise ValueError("Neither built-in VLESS ('vless_config') nor 'xray_bridge_inbound' is configured")
     xray_bridge_addr = (xray_bridge_str.rsplit(":", 1)[0], int(xray_bridge_str.rsplit(":", 1)[1]))
     xray_bridge_socket = create_v4_udp_dgram_socket(False, None)
+    _apply_fwmark(xray_bridge_socket)
     print(f"[init] Xray bridge inbound: {xray_bridge_addr}")
     vless_info = None
     bridge_host = bridge_port_num = None
@@ -158,6 +202,7 @@ fake_send_port = int(config["fake_send_port"])
 print(f"[init] Spoof source (fake_send_ip:port): {fake_send_ip}:{fake_send_port}")
 
 wan_main_socket = create_v4_udp_dgram_socket(False, ("0.0.0.0", 0))
+_apply_fwmark(wan_main_socket)
 wan_main_socket_port = int(wan_main_socket.getsockname()[1])
 print(f"[init] WAN receive socket bound to port: {wan_main_socket_port}")
 
@@ -232,7 +277,8 @@ async def vless_manager():
     while True:
         try:
             print(f"[vless] Connecting to {ws_url} ...")
-            async with aiohttp.ClientSession(headers=headers) as session:
+            connector = _make_aiohttp_connector()
+            async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
                 async with session.ws_connect(
                     ws_url,
                     ssl=ssl_context,
@@ -356,6 +402,7 @@ async def reg_send(my_public_ip: str):
     """Send registration packets to the QS-Tunnel server every 20 seconds."""
     loop = asyncio.get_running_loop()
     reg_socket = create_v4_udp_dgram_socket(False, None)
+    _apply_fwmark(reg_socket)
     info_plain = (
         socket.inet_pton(socket.AF_INET, my_public_ip) +
         wan_main_socket_port.to_bytes(2, byteorder="big") +
@@ -392,7 +439,8 @@ async def nat_keep_alive():
 
 async def fetch_ip(url: str):
     print(f"[fetch_ip] Fetching public IP from {url}")
-    async with aiohttp.ClientSession() as session:
+    connector = _make_aiohttp_connector()
+    async with aiohttp.ClientSession(connector=connector) as session:
         async with session.get(url) as response:
             response.raise_for_status()
             text = await response.text()

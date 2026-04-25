@@ -59,7 +59,8 @@ sudo bash scripts/install_server.sh
   "fake_send_ip": "1.1.1.1",
   "fake_send_port": 443,
   "my_public_ip": "ezping",
-  "info_encryption_pass": "your-shared-secret"
+  "info_encryption_pass": "your-shared-secret",
+  "fwmark": 51821
 }
 ```
 
@@ -69,6 +70,7 @@ Most important fields:
 - `h_in_address`: where your VPN client sends UDP locally (must match your VPN client endpoint)
 - `info_encryption_pass`: must equal server secret
 - `fake_send_ip` / `fake_send_port`: spoofed source IP:port for server replies (commonly `1.1.1.1:443`)
+- `fwmark`: Linux only — see [WireGuard routing bypass](#wireguard-routing-bypass-linux) below
 
 ### 5) Run
 
@@ -77,12 +79,47 @@ On server:
 sudo python main_server.py
 ```
 
-On client:
+On client (root or CAP_NET_ADMIN required on Linux when `fwmark` is set):
 ```bash
-python main_client.py
+sudo python main_client.py
 ```
 
 Then start your VPN client (for WireGuard, point endpoint to `127.0.0.1:10443`).
+
+---
+
+## WireGuard routing bypass (Linux)
+
+When WireGuard uses `AllowedIPs = 0.0.0.0/0` it routes **all** traffic through the tunnel.
+This captures QS-Tunnel's own internet connections (VLESS WebSocket, registration UDP,
+keep-alive UDP) and causes a routing loop — VLESS stops working the moment WireGuard is activated.
+
+**Fix:** use `fwmark` so QS-Tunnel's sockets are stamped with a Linux packet mark that bypasses
+WireGuard's routing rules.
+
+**Step 1 — `config_client.json`:** set `"fwmark"` to any non-zero integer, e.g. `51821`.
+
+**Step 2 — `wg0_client.conf`:** add `PostUp`/`PreDown` hooks that install the bypass rule
+(use the same integer you chose for `fwmark`):
+
+```ini
+[Interface]
+PrivateKey = <CLIENT_PRIVATE_KEY>
+Address = 10.0.0.2/32
+DNS = 1.1.1.1
+PostUp  = ip rule add fwmark 51821 table main priority 100
+PreDown = ip rule del fwmark 51821 table main priority 100
+
+[Peer]
+PublicKey = <SERVER_PUBLIC_KEY>
+AllowedIPs = 0.0.0.0/0, ::/0
+Endpoint = 127.0.0.1:10443
+```
+
+**Step 3:** run QS-Tunnel as root (or with `CAP_NET_ADMIN`) — `SO_MARK` requires this privilege.
+
+> **Windows / macOS:** the `fwmark` option is ignored on non-Linux platforms; use split-tunnel
+> (`AllowedIPs` that exclude the VLESS server IP) or a similar OS-level bypass instead.
 
 ---
 

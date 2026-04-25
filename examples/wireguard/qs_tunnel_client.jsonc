@@ -20,5 +20,11 @@
   // Your public IPv4, or "ezping" / "ipnumberia" / "ipmyp" for auto-detection.
   "my_public_ip": "ezping",
 
-  "info_encryption_pass": "your-shared-secret"   // must match server's info_decryption_pass
+  "info_encryption_pass": "your-shared-secret",   // must match server's info_decryption_pass
+
+  // Optional — Linux only.  Set to a non-zero integer (e.g. 51821) to stamp all of
+  // QS-Tunnel's internet-bound sockets with SO_MARK so they bypass WireGuard routing.
+  // Requires CAP_NET_ADMIN (root).  Must match the fwmark value in wg0_client.conf PostUp.
+  // Leave at 0 (or omit) if you are not using WireGuard or do not need the bypass.
+  "fwmark": 0
 }
