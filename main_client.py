@@ -1,8 +1,10 @@
 import asyncio
+import atexit
 import random
 import socket
 import json
 import os
+import subprocess
 import sys
 import hashlib
 import re
@@ -67,6 +69,126 @@ def _make_aiohttp_connector() -> aiohttp.TCPConnector:
                 "upgrade aiohttp for WireGuard bypass on TCP connections."
             )
     return aiohttp.TCPConnector()
+
+
+# ---------------------------------------------------------------------------
+# Windows WireGuard routing bypass
+# ---------------------------------------------------------------------------
+
+_windows_bypass_ips: list[str] = []
+_HOST_ROUTE_MASK = "255.255.255.255"
+
+# Mapping from my_public_ip shorthand → (key, fetch URL) used both for bypass
+# route resolution and for the actual IP-fetch call in main().
+_IP_SVC_URLS: dict[str, str] = {
+    "ezping":     "https://ezping.ir/geoip",
+    "ipnumberia": "https://ipnumberia.com/",
+    "ipmyp":      "https://ipmyp.ir/",
+}
+
+
+def _get_default_gateway_windows() -> str | None:
+    """Return the IPv4 default gateway on Windows by parsing ``route print 0.0.0.0``."""
+    try:
+        result = subprocess.run(
+            ["route", "print", "0.0.0.0"],
+            text=True, timeout=5, capture_output=True,
+        )
+        out = result.stdout
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 3 and parts[0] == "0.0.0.0" and parts[1] == "0.0.0.0":
+                try:
+                    socket.inet_aton(parts[2])
+                    return parts[2]
+                except OSError:
+                    continue
+    except Exception as e:
+        print(f"[windows_bypass] Could not determine default gateway: {e}")
+    return None
+
+
+def _apply_windows_bypass(ips: list[str]) -> None:
+    """Add temporary host routes so QS-Tunnel's traffic bypasses the WireGuard interface.
+
+    Uses ``route add <IP> mask <HOST_ROUTE_MASK> <GATEWAY>``.  Requires Administrator.
+    A non-fatal warning is printed if any route cannot be added.
+    """
+    gateway = _get_default_gateway_windows()
+    if not gateway:
+        print(
+            "[windows_bypass] WARNING: Could not detect default gateway — "
+            "QS-Tunnel traffic may be captured by WireGuard routing.\n"
+            f"  Fix: run  route add <SERVER_IP> mask {_HOST_ROUTE_MASK} <DEFAULT_GATEWAY>"
+            "  as Administrator."
+        )
+        return
+    for ip in ips:
+        try:
+            subprocess.run(
+                ["route", "add", ip, "mask", _HOST_ROUTE_MASK, gateway],
+                check=True, capture_output=True, text=True, timeout=5,
+            )
+            _windows_bypass_ips.append(ip)
+            print(f"[windows_bypass] Route added: {ip} via {gateway}")
+        except subprocess.CalledProcessError as e:
+            stderr = (e.stderr or "").strip()
+            print(
+                f"[windows_bypass] WARNING: Failed to add route for {ip}: "
+                f"{stderr or e}\n"
+                "  Ensure QS-Tunnel is running as Administrator for WireGuard bypass."
+            )
+
+
+def _remove_windows_bypass() -> None:
+    """Remove host routes previously added by :func:`_apply_windows_bypass`."""
+    for ip in _windows_bypass_ips:
+        try:
+            subprocess.run(
+                ["route", "delete", ip, "mask", _HOST_ROUTE_MASK],
+                capture_output=True, text=True, timeout=5,
+            )
+            print(f"[windows_bypass] Route removed: {ip}")
+        except Exception:
+            pass
+
+
+def _setup_windows_bypass_routes() -> None:
+    """Resolve all server hostnames to IPs and install Windows host routes for each.
+
+    Called once at startup on Windows before any outbound connections are made.
+    This is the Windows equivalent of the Linux ``fwmark`` / ``ip rule`` bypass.
+    """
+    bypass: set[str] = set()
+
+    # Registration server
+    try:
+        bypass.add(socket.gethostbyname(server_reg_addr[0]))
+    except OSError as e:
+        print(f"[windows_bypass] Could not resolve registration server host: {e}")
+
+    # NAT keep-alive / spoofed-source IP (always a literal IP)
+    bypass.add(fake_send_ip)
+
+    # VLESS server
+    if use_builtin_vless:
+        try:
+            bypass.add(socket.gethostbyname(vless_info["host"]))
+        except OSError as e:
+            print(f"[windows_bypass] Could not resolve VLESS host: {e}")
+
+    # Public IP detection services — use _IP_SVC_URLS as single source of truth
+    svc_url = _IP_SVC_URLS.get(config.get("my_public_ip", ""))
+    if svc_url:
+        svc_host = urlparse(svc_url).hostname or ""
+        try:
+            bypass.add(socket.gethostbyname(svc_host))
+        except OSError as e:
+            print(f"[windows_bypass] Could not resolve IP-service host {svc_host!r}: {e}")
+
+    if bypass:
+        _apply_windows_bypass(list(bypass))
+        atexit.register(_remove_windows_bypass)
 
 
 def parse_vless_url(url: str) -> dict:
@@ -457,13 +579,17 @@ async def fetch_ip(url: str):
 
 async def main():
     loop = asyncio.get_running_loop()
+
+    # On Windows, WireGuard has no fwmark/SO_MARK equivalent.  Instead, install
+    # explicit host routes for every server IP so QS-Tunnel's traffic bypasses the
+    # WireGuard default route.  Must be done before any outbound connections.
+    if sys.platform == "win32":
+        _setup_windows_bypass_routes()
+
     my_public_ip = config["my_public_ip"]
-    if my_public_ip == "ezping":
-        my_public_ip = await fetch_ip("https://ezping.ir/geoip")
-    elif my_public_ip == "ipnumberia":
-        my_public_ip = await fetch_ip("https://ipnumberia.com/")
-    elif my_public_ip == "ipmyp":
-        my_public_ip = await fetch_ip("https://ipmyp.ir/")
+    svc_url = _IP_SVC_URLS.get(my_public_ip)
+    if svc_url:
+        my_public_ip = await fetch_ip(svc_url)
     else:
         print(f"[main] Using configured public IP: {my_public_ip}")
 

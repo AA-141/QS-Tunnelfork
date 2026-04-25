@@ -88,11 +88,13 @@ Then start your VPN client (for WireGuard, point endpoint to `127.0.0.1:10443`).
 
 ---
 
-## WireGuard routing bypass (Linux)
+## WireGuard routing bypass
 
 When WireGuard uses `AllowedIPs = 0.0.0.0/0` it routes **all** traffic through the tunnel.
 This captures QS-Tunnel's own internet connections (VLESS WebSocket, registration UDP,
 keep-alive UDP) and causes a routing loop — VLESS stops working the moment WireGuard is activated.
+
+### Linux
 
 **Fix:** use `fwmark` so QS-Tunnel's sockets are stamped with a Linux packet mark that bypasses
 WireGuard's routing rules.
@@ -118,8 +120,38 @@ Endpoint = 127.0.0.1:10443
 
 **Step 3:** run QS-Tunnel as root (or with `CAP_NET_ADMIN`) — `SO_MARK` requires this privilege.
 
-> **Windows / macOS:** the `fwmark` option is ignored on non-Linux platforms; use split-tunnel
-> (`AllowedIPs` that exclude the VLESS server IP) or a similar OS-level bypass instead.
+### Windows
+
+On Windows, `SO_MARK` / `fwmark` does not exist.  Instead, QS-Tunnel automatically adds
+**temporary host routes** for every server IP (VLESS server, registration server, keep-alive
+target) so that those packets leave via the real network interface rather than the WireGuard
+tunnel.
+
+Requirements:
+- **Run QS-Tunnel as Administrator** — modifying the Windows routing table requires elevated
+  privileges.
+- **Start QS-Tunnel before (or immediately after) activating WireGuard** — the routes are
+  installed at startup and persist through WireGuard activation.
+
+The routes are removed automatically when QS-Tunnel exits.
+
+If automatic route installation fails (e.g. non-admin), a warning is printed with the manual
+command:
+
+```
+route add <SERVER_IP> mask 255.255.255.255 <DEFAULT_GATEWAY>
+```
+
+### macOS
+
+The `fwmark` option is ignored on macOS.  Use split-tunnel (`AllowedIPs` that exclude the
+VLESS server IP) or add a manual host route:
+
+```bash
+sudo route add -host <SERVER_IP> <DEFAULT_GATEWAY>
+# Remove when done:
+sudo route delete -host <SERVER_IP>
+```
 
 ---
 
