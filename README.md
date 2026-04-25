@@ -142,6 +142,19 @@ command:
 route add <SERVER_IP> mask 255.255.255.255 <DEFAULT_GATEWAY>
 ```
 
+#### Cleanup after an ungraceful exit
+
+If QS-Tunnel is killed (e.g. `Ctrl-C` before cleanup completes, or a crash), the host routes
+may be left behind. Run the bundled cleanup script **as Administrator** to remove them:
+
+```
+python scripts/cleanup_routes.py
+```
+
+The script reads `config_client.json`, resolves the same set of server IPs, and deletes each
+`/32` host route. It is safe to run even when QS-Tunnel is not running and even if some routes
+have already been removed — missing routes are silently ignored.
+
 ### macOS
 
 The `fwmark` option is ignored on macOS.  Use split-tunnel (`AllowedIPs` that exclude the
