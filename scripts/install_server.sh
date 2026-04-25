@@ -33,6 +33,7 @@ QS_SECRET=""
 H_OUT_ADDRESS=""
 SERVER_PUBLIC_IP=""
 XRAY_LISTEN_PORT=""
+WG_DNS=""
 
 log() {
   printf '[info] %s\n' "$*"
@@ -48,15 +49,16 @@ err() {
 
 run_cmd() {
   if [[ "${DRY_RUN}" == true ]]; then
-    printf '[dry-run] %s\n' "$*"
+    printf '[dry-run] %q ' "$@"
+    printf '\n'
     return 0
   fi
-  eval "$@"
+  "$@"
 }
 
 require_root() {
   if [[ "${EUID}" -ne 0 ]]; then
-    err "Please run as root: sudo bash ${REPO_DIR}/scripts/install_server.sh"
+    err "Please run as root: sudo bash scripts/install_server.sh"
     exit 1
   fi
 }
@@ -70,6 +72,7 @@ set_defaults() {
   WG_LISTEN_PORT="${WG_LISTEN_PORT:-51820}"
   WG_SERVER_CIDR="${WG_SERVER_CIDR:-10.66.0.1/24}"
   WG_CLIENT_CIDR="${WG_CLIENT_CIDR:-10.66.0.2/32}"
+  WG_DNS="${WG_DNS:-1.1.1.1}"
   QS_REG_PORT="${QS_REG_PORT:-5300}"
   QS_BRIDGE_PORT="${QS_BRIDGE_PORT:-5301}"
   XRAY_LISTEN_PORT="${XRAY_LISTEN_PORT:-443}"
@@ -98,7 +101,7 @@ XRAY_INSTALLED=${XRAY_INSTALLED:-false}
 XRAY_ENABLED=${XRAY_ENABLED:-false}
 TUNNEL_INSTALLED=${TUNNEL_INSTALLED:-false}
 TUNNEL_ENABLED=${TUNNEL_ENABLED:-false}
-LAST_UPDATED_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+LAST_STATE_SAVE_UTC=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 STATE
 }
 
@@ -114,6 +117,7 @@ QS_SECRET=${QS_SECRET}
 H_OUT_ADDRESS=${H_OUT_ADDRESS}
 SERVER_PUBLIC_IP=${SERVER_PUBLIC_IP}
 XRAY_LISTEN_PORT=${XRAY_LISTEN_PORT}
+WG_DNS=${WG_DNS}
 LAST
 }
 
@@ -141,7 +145,7 @@ get_service_running() {
 
 port_in_use() {
   local port="$1"
-  ss -lun "( sport = :${port} )" | tail -n +2 | grep -q ":${port}"
+  ss -lunH | awk -v p=":${port}" '{if ($5 ~ p"$") {found=1}} END {exit(found?0:1)}'
 }
 
 detect_server_public_ip() {
@@ -154,6 +158,33 @@ detect_server_public_ip() {
   if [[ -z "${SERVER_PUBLIC_IP}" ]]; then
     SERVER_PUBLIC_IP="YOUR_SERVER_IP"
   fi
+}
+
+get_qs_secret_from_config() {
+  local output
+  if output="$(REPO_DIR="${REPO_DIR}" python3 - <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+p = Path(os.environ["REPO_DIR"]) / "config_server.json"
+if not p.exists():
+    sys.exit(0)
+try:
+    data = json.loads(p.read_text(encoding="utf-8-sig"))
+except Exception:
+    sys.exit(2)
+print(data.get("info_decryption_pass", ""))
+PY
+)"; then
+    printf '%s' "${output}"
+    return 0
+  fi
+  if [[ $? -eq 2 ]]; then
+    warn "Failed to parse ${REPO_DIR}/config_server.json; using generated fallback secret."
+  fi
+  return 1
 }
 
 preflight() {
@@ -199,11 +230,11 @@ preflight() {
 
 install_python_stack() {
   local venv_dir="${REPO_DIR}/.venv"
-  run_cmd "apt-get update"
-  run_cmd "DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv iptables curl"
-  run_cmd "python3 -m venv '${venv_dir}'"
-  run_cmd "'${venv_dir}/bin/pip' install --upgrade pip"
-  run_cmd "'${venv_dir}/bin/pip' install -r '${REPO_DIR}/requirements.txt'"
+  run_cmd apt-get update
+  run_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv iptables curl
+  run_cmd python3 -m venv "${venv_dir}"
+  run_cmd "${venv_dir}/bin/pip" install --upgrade pip
+  run_cmd "${venv_dir}/bin/pip" install -r "${REPO_DIR}/requirements.txt"
 }
 
 write_qs_service() {
@@ -224,7 +255,7 @@ RestartSec=2
 [Install]
 WantedBy=multi-user.target
 UNIT
-  run_cmd "systemctl daemon-reload"
+  run_cmd systemctl daemon-reload
 }
 
 wireguard_install() {
@@ -234,16 +265,30 @@ wireguard_install() {
   set_defaults
 
   log "Installing WireGuard method..."
-  run_cmd "apt-get update"
-  run_cmd "DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard iptables"
-  run_cmd "modprobe wireguard 2>/dev/null || true"
+  run_cmd apt-get update
+  run_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard iptables
+  if run_cmd modprobe wireguard; then
+    log "WireGuard kernel module loaded."
+  else
+    warn "Could not load WireGuard module (it may already be built-in)."
+  fi
 
-  run_cmd "install -d -m 700 /etc/wireguard/keys"
+  run_cmd install -d -m 700 /etc/wireguard/keys
   if [[ ! -f /etc/wireguard/keys/server_private.key || ! -f /etc/wireguard/keys/server_public.key ]]; then
-    run_cmd "umask 077 && wg genkey | tee /etc/wireguard/keys/server_private.key | wg pubkey > /etc/wireguard/keys/server_public.key"
+    if [[ "${DRY_RUN}" == true ]]; then
+      printf '[dry-run] generate server WireGuard keypair\n'
+    else
+      umask 077
+      wg genkey | tee /etc/wireguard/keys/server_private.key | wg pubkey > /etc/wireguard/keys/server_public.key
+    fi
   fi
   if [[ ! -f /etc/wireguard/keys/client_private.key || ! -f /etc/wireguard/keys/client_public.key ]]; then
-    run_cmd "umask 077 && wg genkey | tee /etc/wireguard/keys/client_private.key | wg pubkey > /etc/wireguard/keys/client_public.key"
+    if [[ "${DRY_RUN}" == true ]]; then
+      printf '[dry-run] generate client WireGuard keypair\n'
+    else
+      umask 077
+      wg genkey | tee /etc/wireguard/keys/client_private.key | wg pubkey > /etc/wireguard/keys/client_public.key
+    fi
   fi
 
   local server_private_key client_public_key
@@ -265,9 +310,17 @@ WGCONF
   chmod 600 "/etc/wireguard/${WG_IFACE}.conf"
 
   if ! grep -q '^net.ipv4.ip_forward=1$' /etc/sysctl.conf; then
-    run_cmd "echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf"
+    if [[ "${DRY_RUN}" == true ]]; then
+      printf '[dry-run] append net.ipv4.ip_forward=1 to /etc/sysctl.conf\n'
+    else
+      echo 'net.ipv4.ip_forward=1' >> /etc/sysctl.conf
+    fi
   fi
-  run_cmd "sysctl -p >/dev/null"
+  if [[ "${DRY_RUN}" == true ]]; then
+    printf '[dry-run] sysctl -p\n'
+  else
+    sysctl -p >/dev/null
+  fi
 
   wireguard_enable
   wireguard_start || true
@@ -302,30 +355,30 @@ OUT
 
 wireguard_start() {
   local unit="wg-quick@${WG_IFACE}.service"
-  run_cmd "systemctl reset-failed '${unit}' 2>/dev/null || true"
-  run_cmd "systemctl start '${unit}'"
+  run_cmd systemctl reset-failed "${unit}" || true
+  run_cmd systemctl start "${unit}"
 }
 
 wireguard_stop() {
   local unit="wg-quick@${WG_IFACE}.service"
-  run_cmd "systemctl stop '${unit}'"
+  run_cmd systemctl stop "${unit}"
 }
 
 wireguard_restart() {
   local unit="wg-quick@${WG_IFACE}.service"
-  run_cmd "systemctl restart '${unit}'"
+  run_cmd systemctl restart "${unit}"
 }
 
 wireguard_enable() {
   local unit="wg-quick@${WG_IFACE}.service"
-  run_cmd "systemctl enable '${unit}' >/dev/null"
+  run_cmd systemctl enable "${unit}"
   WIREGUARD_ENABLED=true
   save_state
 }
 
 wireguard_disable() {
   local unit="wg-quick@${WG_IFACE}.service"
-  run_cmd "systemctl disable '${unit}' >/dev/null"
+  run_cmd systemctl disable "${unit}"
   WIREGUARD_ENABLED=false
   save_state
 }
@@ -346,7 +399,7 @@ wireguard_remove() {
   local unit="wg-quick@${WG_IFACE}.service"
   wireguard_stop || true
   wireguard_disable || true
-  run_cmd "rm -f '/etc/wireguard/${WG_IFACE}.conf'"
+  run_cmd rm -f "/etc/wireguard/${WG_IFACE}.conf"
   WIREGUARD_INSTALLED=false
   save_state
   log "WireGuard removed (keys preserved)."
@@ -358,7 +411,7 @@ wireguard_reset() {
     [[ "${ans}" =~ ^[Yy]$ ]] || return 0
   fi
   wireguard_remove
-  run_cmd "rm -f /etc/wireguard/keys/server_private.key /etc/wireguard/keys/server_public.key /etc/wireguard/keys/client_private.key /etc/wireguard/keys/client_public.key"
+  run_cmd rm -f /etc/wireguard/keys/server_private.key /etc/wireguard/keys/server_public.key /etc/wireguard/keys/client_private.key /etc/wireguard/keys/client_public.key
   wireguard_install
 }
 
@@ -368,14 +421,14 @@ xray_install() {
   load_state
   log "Installing Xray method..."
 
-  run_cmd "apt-get update"
-  if ! run_cmd "DEBIAN_FRONTEND=noninteractive apt-get install -y xray"; then
-    if ! run_cmd "DEBIAN_FRONTEND=noninteractive apt-get install -y xray-core"; then
+  run_cmd apt-get update
+  if ! run_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y xray; then
+    if ! run_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y xray-core; then
       warn "Could not install xray via apt. Install manually, then run configure/status actions."
     fi
   fi
 
-  run_cmd "install -d -m 755 /etc/xray"
+  run_cmd install -d -m 755 /etc/xray
   if [[ ! -f /etc/xray/config.jsonc ]]; then
     cp "${REPO_DIR}/examples/xray_core_xhttp_h3/xhttp_h3_server.jsonc" /etc/xray/config.jsonc
   fi
@@ -395,7 +448,7 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 UNIT
-    run_cmd "systemctl daemon-reload"
+    run_cmd systemctl daemon-reload
   fi
 
   XRAY_INSTALLED=true
@@ -407,7 +460,7 @@ UNIT
 xray_configure() {
   load_state
   set_defaults
-  run_cmd "install -d -m 755 /etc/xray"
+  run_cmd install -d -m 755 /etc/xray
   if [[ -f /etc/xray/config.jsonc ]]; then
     cp /etc/xray/config.jsonc "/etc/xray/config.jsonc.bak.$(date +%s)"
   fi
@@ -429,18 +482,18 @@ Config: /etc/xray/config.jsonc
 OUT
 }
 
-xray_start() { run_cmd "systemctl start xray.service"; }
-xray_stop() { run_cmd "systemctl stop xray.service"; }
-xray_restart() { run_cmd "systemctl restart xray.service"; }
+xray_start() { run_cmd systemctl start xray.service; }
+xray_stop() { run_cmd systemctl stop xray.service; }
+xray_restart() { run_cmd systemctl restart xray.service; }
 
 xray_enable() {
-  run_cmd "systemctl enable xray.service >/dev/null"
+  run_cmd systemctl enable xray.service
   XRAY_ENABLED=true
   save_state
 }
 
 xray_disable() {
-  run_cmd "systemctl disable xray.service >/dev/null"
+  run_cmd systemctl disable xray.service
   XRAY_ENABLED=false
   save_state
 }
@@ -460,7 +513,7 @@ xray_diagnose() {
 xray_remove() {
   xray_stop || true
   xray_disable || true
-  run_cmd "rm -f /etc/xray/config.jsonc"
+  run_cmd rm -f /etc/xray/config.jsonc
   XRAY_INSTALLED=false
   save_state
   log "Xray config removed (binary may remain installed)."
@@ -483,6 +536,7 @@ tunnel_install() {
 
   if [[ -z "${QS_SECRET}" ]]; then
     QS_SECRET="$(openssl rand -hex 16)"
+    log "Generated a new QS shared secret for this configuration."
   fi
 
   cat > "${REPO_DIR}/config_server.json" <<CFG
@@ -499,8 +553,8 @@ CFG
   tunnel_restart
 
   if command_exists ufw; then
-    run_cmd "ufw allow ${QS_REG_PORT}/udp >/dev/null || true"
-    run_cmd "ufw allow ${QS_BRIDGE_PORT}/udp >/dev/null || true"
+    run_cmd ufw allow "${QS_REG_PORT}/udp" || true
+    run_cmd ufw allow "${QS_BRIDGE_PORT}/udp" || true
   fi
 
   TUNNEL_INSTALLED=true
@@ -514,18 +568,7 @@ tunnel_configure() {
   set_defaults
   if [[ -z "${QS_SECRET}" ]]; then
     if [[ -f "${REPO_DIR}/config_server.json" ]]; then
-      QS_SECRET="$(REPO_DIR="${REPO_DIR}" python3 - <<'PY'
-import json
-import os
-from pathlib import Path
-p=Path(os.environ['REPO_DIR']) / 'config_server.json'
-if p.exists():
-    try:
-        print(json.loads(p.read_text(encoding='utf-8-sig')).get('info_decryption_pass',''))
-    except Exception:
-        pass
-PY
-)"
+      QS_SECRET="$(get_qs_secret_from_config)"
     fi
   fi
   if [[ -z "${QS_SECRET}" ]]; then
@@ -557,18 +600,18 @@ Config: ${REPO_DIR}/config_server.json
 OUT
 }
 
-tunnel_start() { run_cmd "systemctl start qs-tunnel.service"; }
-tunnel_stop() { run_cmd "systemctl stop qs-tunnel.service"; }
-tunnel_restart() { run_cmd "systemctl restart qs-tunnel.service"; }
+tunnel_start() { run_cmd systemctl start qs-tunnel.service; }
+tunnel_stop() { run_cmd systemctl stop qs-tunnel.service; }
+tunnel_restart() { run_cmd systemctl restart qs-tunnel.service; }
 
 tunnel_enable() {
-  run_cmd "systemctl enable qs-tunnel.service >/dev/null"
+  run_cmd systemctl enable qs-tunnel.service
   TUNNEL_ENABLED=true
   save_state
 }
 
 tunnel_disable() {
-  run_cmd "systemctl disable qs-tunnel.service >/dev/null"
+  run_cmd systemctl disable qs-tunnel.service
   TUNNEL_ENABLED=false
   save_state
 }
@@ -580,14 +623,14 @@ tunnel_logs() {
 tunnel_diagnose() {
   log "Tunnel diagnose"
   systemctl status qs-tunnel.service --no-pager || true
-  ss -lun | grep -E ":(${QS_REG_PORT}|${QS_BRIDGE_PORT})\\b" || true
+  ss -lunH | awk -v p1=":${QS_REG_PORT}" -v p2=":${QS_BRIDGE_PORT}" '$5 ~ p1"$" || $5 ~ p2"$"' || true
 }
 
 tunnel_remove() {
   tunnel_stop || true
   tunnel_disable || true
-  run_cmd "rm -f /etc/systemd/system/qs-tunnel.service"
-  run_cmd "systemctl daemon-reload"
+  run_cmd rm -f /etc/systemd/system/qs-tunnel.service
+  run_cmd systemctl daemon-reload
   TUNNEL_INSTALLED=false
   save_state
   log "Tunnel service unit removed."
@@ -605,14 +648,14 @@ export_artifacts() {
   detect_server_public_ip
 
   local out_dir="${ARTIFACTS_DIR}/${TARGET}"
-  run_cmd "mkdir -p '${out_dir}'"
+  run_cmd mkdir -p "${out_dir}"
 
   if [[ -f /etc/wireguard/keys/client_private.key && -f /etc/wireguard/keys/server_public.key ]]; then
     cat > "${out_dir}/wireguard_client.conf" <<WGCLIENT
 [Interface]
 PrivateKey = $(cat /etc/wireguard/keys/client_private.key)
 Address = ${WG_CLIENT_CIDR}
-DNS = 1.1.1.1
+DNS = ${WG_DNS}
 
 [Peer]
 PublicKey = $(cat /etc/wireguard/keys/server_public.key)
@@ -622,16 +665,7 @@ WGCLIENT
   fi
 
   if [[ -z "${QS_SECRET}" && -f "${REPO_DIR}/config_server.json" ]]; then
-    QS_SECRET="$(REPO_DIR="${REPO_DIR}" python3 - <<'PY'
-import json
-import os
-from pathlib import Path
-p=Path(os.environ['REPO_DIR']) / 'config_server.json'
-if p.exists():
-    d=json.loads(p.read_text(encoding='utf-8-sig'))
-    print(d.get('info_decryption_pass',''))
-PY
-)"
+    QS_SECRET="$(get_qs_secret_from_config)"
   fi
 
   cat > "${out_dir}/qs_client.json" <<QSCFG
@@ -656,6 +690,8 @@ Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 Target: ${TARGET}
 Server IP: ${SERVER_PUBLIC_IP}
 Methods: wireguard,xray,tunnel
+Default fake_send_ip for qs_client.json: 1.1.1.1 (change if your network needs a different stable public UDP endpoint)
+Edit qs_client.json in this artifact directory to change fake_send_ip.
 Files:
 - wireguard_client.conf (if keys exist)
 - qs_client.json
@@ -668,8 +704,8 @@ META
 
 upgrade_self() {
   require_root
-  run_cmd "apt-get update"
-  run_cmd "DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv wireguard iptables curl"
+  run_cmd apt-get update
+  run_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv wireguard iptables curl
   log "Core dependencies upgraded."
 }
 
@@ -787,6 +823,9 @@ service_methods() {
     err "Missing --action for service command"
     return 1
   fi
+  if [[ "${ACTION}" == "diag" ]]; then
+    ACTION="diagnose"
+  fi
   if [[ "${METHOD}" == "all" || -z "${METHOD}" ]]; then
     methods=(wireguard xray tunnel)
   else
@@ -830,7 +869,7 @@ Commands:
   summary
   install --method wireguard|xray|tunnel|all
   configure --method wireguard|xray|tunnel|all
-  service --method wireguard|xray|tunnel|all --action status|start|stop|restart|enable|disable|logs|diagnose
+  service --method wireguard|xray|tunnel|all --action status|start|stop|restart|enable|disable|logs|diagnose|diag
   export --target generic|windows
   remove --method wireguard|xray|tunnel|all
   reset --method wireguard|xray|tunnel|all
@@ -853,6 +892,7 @@ Options:
   --h-out-address <value>
   --server-public-ip <value>
   --xray-listen-port <value>
+  --wg-dns <value>
 HELP
 }
 
@@ -882,7 +922,7 @@ MENU
       4) METHOD=all; configure_methods ;;
       5)
         read -rp "Method (wireguard/xray/tunnel/all): " METHOD
-        read -rp "Action (status/start/stop/restart/enable/disable/logs/diagnose): " ACTION
+        read -rp "Action (status/start/stop/restart/enable/disable/logs/diagnose/diag): " ACTION
         service_methods
         ;;
       6)
@@ -979,6 +1019,10 @@ parse_args() {
         ;;
       --xray-listen-port)
         XRAY_LISTEN_PORT="$2"
+        shift 2
+        ;;
+      --wg-dns)
+        WG_DNS="$2"
         shift 2
         ;;
       *)

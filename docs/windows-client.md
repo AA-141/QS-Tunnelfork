@@ -2,8 +2,8 @@
 
 ## Fast path (recommended)
 1. Export artifacts on server:
-   - `sudo bash /home/runner/work/QS-Tunnel/QS-Tunnel/scripts/install_server.sh export --target windows`
-2. Copy `/home/runner/work/QS-Tunnel/QS-Tunnel/deploy/artifacts/windows/` to Windows.
+   - `sudo bash scripts/install_server.sh export --target windows`
+2. Copy `deploy/artifacts/windows/` to Windows.
 3. Run PowerShell helper:
    - `powershell -ExecutionPolicy Bypass -File .\scripts\windows\setup_client.ps1 -ArtifactDir .\deploy\artifacts\windows`
 4. Fill `vless_config` or `xray_bridge_inbound` in `qs_client.json`.

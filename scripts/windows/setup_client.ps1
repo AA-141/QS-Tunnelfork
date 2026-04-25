@@ -25,7 +25,7 @@ $qsConfig = Join-Path $ArtifactDir "qs_client.json"
 $wgConfig = Join-Path $ArtifactDir "wireguard_client.conf"
 
 if (-not (Test-Path $qsConfig)) {
-  throw "Missing qs_client.json in artifact directory. Run server export first."
+  throw "Missing qs_client.json at $qsConfig. Run: sudo bash scripts/install_server.sh export --target windows"
 }
 
 Write-Info "Validating qs_client.json"
@@ -36,8 +36,16 @@ if (Test-Path $wgConfig) {
   if (-not $SkipImport) {
     if (Test-Path $WireGuardExe) {
       Write-Info "Attempting to import WireGuard config"
-      & "$WireGuardExe" /importtunnelservice "$wgConfig" | Out-Null
-      Write-Info "WireGuard config imported. Open WireGuard UI to activate the tunnel."
+      try {
+        $importOutput = & "$WireGuardExe" /importtunnelservice "$wgConfig" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+          throw "WireGuard import returned exit code $LASTEXITCODE. Output: $importOutput"
+        }
+        Write-Info "WireGuard config imported. Open WireGuard UI to activate the tunnel."
+      }
+      catch {
+        Write-Warn "WireGuard import failed: $($_.Exception.Message)"
+      }
     }
     else {
       Write-Warn "WireGuard executable not found at $WireGuardExe. Import manually in WireGuard UI."

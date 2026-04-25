@@ -6,7 +6,7 @@ QS-Tunnel is an asymmetric UDP tunnel for low-bandwidth upload and spoofed UDP d
 
 Use one entrypoint for install and operations:
 
-- `/home/runner/work/QS-Tunnel/QS-Tunnel/scripts/install_server.sh`
+- `scripts/install_server.sh`
 
 This script now handles:
 - preflight checks
@@ -18,7 +18,7 @@ This script now handles:
 ## Quick start
 
 ```bash
-cd /home/runner/work/QS-Tunnel/QS-Tunnel
+cd QS-Tunnel
 sudo bash scripts/install_server.sh preflight
 sudo bash scripts/install_server.sh install --method all
 sudo bash scripts/install_server.sh summary
@@ -54,23 +54,24 @@ sudo bash scripts/install_server.sh reset --method wireguard|xray|tunnel|all --f
 
 ## Artifacts and state
 
-- Runtime state: `/home/runner/work/QS-Tunnel/QS-Tunnel/deploy/services/state.env`
-- Last used settings: `/home/runner/work/QS-Tunnel/QS-Tunnel/deploy/services/last_values.env`
-- Client exports: `/home/runner/work/QS-Tunnel/QS-Tunnel/deploy/artifacts/<target>/`
+- Runtime state: `deploy/services/state.env`
+- Last used settings: `deploy/services/last_values.env`
+- Client exports: `deploy/artifacts/<target>/`
+  - exported `qs_client.json` defaults `fake_send_ip` to `1.1.1.1`; change it if you need a different stable UDP endpoint
 
 ## Client/server decoupling
 
 Server-side scripts now export client artifacts only. Client platform specifics are handled separately:
 
-- Windows helper: `/home/runner/work/QS-Tunnel/QS-Tunnel/scripts/windows/setup_client.ps1`
-- Windows guide: `/home/runner/work/QS-Tunnel/QS-Tunnel/docs/windows-client.md`
+- Windows helper: `scripts/windows/setup_client.ps1`
+- Windows guide: `docs/windows-client.md`
 
 ## Method guides
 
-- `/home/runner/work/QS-Tunnel/QS-Tunnel/docs/methods/wireguard.md`
-- `/home/runner/work/QS-Tunnel/QS-Tunnel/docs/methods/xray.md`
-- `/home/runner/work/QS-Tunnel/QS-Tunnel/docs/methods/tunnel-service.md`
-- `/home/runner/work/QS-Tunnel/QS-Tunnel/docs/operations-cheatsheet.md`
+- `docs/methods/wireguard.md`
+- `docs/methods/xray.md`
+- `docs/methods/tunnel-service.md`
+- `docs/operations-cheatsheet.md`
 
 ## Backward compatibility notes
 

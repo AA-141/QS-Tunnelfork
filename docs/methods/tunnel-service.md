@@ -10,23 +10,23 @@
 
 ## Dependencies
 - `python3`, `python3-venv`, `systemd`
-- Repo config: `/home/runner/work/QS-Tunnel/QS-Tunnel/config_server.json`
+- Repo config: `config_server.json`
 
 ## Install
-- `sudo bash /home/runner/work/QS-Tunnel/QS-Tunnel/scripts/install_server.sh install --method tunnel`
+- `sudo bash scripts/install_server.sh install --method tunnel`
 
 ## Configure
-- `sudo bash /home/runner/work/QS-Tunnel/QS-Tunnel/scripts/install_server.sh configure --method tunnel --qs-reg-port 5300 --qs-bridge-port 5301 --h-out-address 127.0.0.1:51820`
+- `sudo bash scripts/install_server.sh configure --method tunnel --qs-reg-port 5300 --qs-bridge-port 5301 --h-out-address 127.0.0.1:51820`
 
 ## Common commands
-- Status: `sudo bash /home/runner/work/QS-Tunnel/QS-Tunnel/scripts/install_server.sh service --method tunnel --action status`
+- Status: `sudo bash scripts/install_server.sh service --method tunnel --action status`
 - Start/Stop/Restart/Enable/Disable/Logs/Diagnose via same `service` command.
 
 ## Troubleshooting
 - Check service: `systemctl status qs-tunnel.service`
 - Logs: `journalctl -eu qs-tunnel.service -n 200 --no-pager`
-- Validate ports and states: `sudo bash /home/runner/work/QS-Tunnel/QS-Tunnel/scripts/install_server.sh summary`
+- Validate ports and states: `sudo bash scripts/install_server.sh summary`
 
 ## Remove / reset
-- Remove: `sudo bash /home/runner/work/QS-Tunnel/QS-Tunnel/scripts/install_server.sh remove --method tunnel`
-- Reset: `sudo bash /home/runner/work/QS-Tunnel/QS-Tunnel/scripts/install_server.sh reset --method tunnel`
+- Remove: `sudo bash scripts/install_server.sh remove --method tunnel`
+- Reset: `sudo bash scripts/install_server.sh reset --method tunnel`
