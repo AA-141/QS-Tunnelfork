@@ -1,8 +1,10 @@
 import asyncio
+import atexit
 import random
 import socket
 import json
 import os
+import subprocess
 import sys
 import hashlib
 import re
@@ -13,6 +15,12 @@ from urllib.parse import urlparse, parse_qs, unquote
 import aiohttp
 
 CLIENT_ID_WIDTH = 3
+
+# Linux kernel value for SO_MARK; present as socket.SO_MARK on Python 3.12+ / Linux.
+_SO_MARK: int = getattr(socket, "SO_MARK", 36)
+
+# Forward declaration — overwritten after config is loaded below.
+fwmark: int = 0
 
 
 def bytes_xor(data: bytes, key: bytes) -> bytes:
@@ -25,6 +33,162 @@ def create_v4_udp_dgram_socket(blocking: bool, bind_addr: tuple[str, int] | None
     if bind_addr is not None:
         s.bind(bind_addr)
     return s
+
+
+def _apply_fwmark(sock: socket.socket) -> None:
+    """Set SO_MARK on *sock* so the packet bypasses WireGuard routing rules.
+
+    Linux only — SO_MARK does not exist on Windows or macOS.
+    Requires CAP_NET_ADMIN (or root).  A failure is logged but not fatal.
+    """
+    if not fwmark or sys.platform != "linux":
+        return
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, _SO_MARK, fwmark)
+    except OSError as e:
+        print(
+            f"[fwmark] WARNING: Could not set SO_MARK={fwmark} on socket: {e}. "
+            "Run as root or grant CAP_NET_ADMIN for WireGuard bypass to work."
+        )
+
+
+def _make_aiohttp_connector() -> aiohttp.TCPConnector:
+    """Return a TCPConnector that stamps every TCP socket with SO_MARK when fwmark is set.
+
+    socket_options are only applied on Linux; on other platforms a plain
+    TCPConnector is returned so Windows users are not affected.
+    """
+    if fwmark and sys.platform == "linux":
+        try:
+            return aiohttp.TCPConnector(
+                socket_options=[(socket.SOL_SOCKET, _SO_MARK, fwmark)]
+            )
+        except TypeError:
+            print(
+                "[fwmark] WARNING: Installed aiohttp does not support socket_options; "
+                "upgrade aiohttp for WireGuard bypass on TCP connections."
+            )
+    return aiohttp.TCPConnector()
+
+
+# ---------------------------------------------------------------------------
+# Windows WireGuard routing bypass
+# ---------------------------------------------------------------------------
+
+_windows_bypass_ips: list[str] = []
+_HOST_ROUTE_MASK = "255.255.255.255"
+
+# Mapping from my_public_ip shorthand → (key, fetch URL) used both for bypass
+# route resolution and for the actual IP-fetch call in main().
+_IP_SVC_URLS: dict[str, str] = {
+    "ezping":     "https://ezping.ir/geoip",
+    "ipnumberia": "https://ipnumberia.com/",
+    "ipmyp":      "https://ipmyp.ir/",
+}
+
+
+def _get_default_gateway_windows() -> str | None:
+    """Return the IPv4 default gateway on Windows by parsing ``route print 0.0.0.0``."""
+    try:
+        result = subprocess.run(
+            ["route", "print", "0.0.0.0"],
+            text=True, timeout=5, capture_output=True,
+        )
+        out = result.stdout
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 3 and parts[0] == "0.0.0.0" and parts[1] == "0.0.0.0":
+                try:
+                    socket.inet_aton(parts[2])
+                    return parts[2]
+                except OSError:
+                    continue
+    except Exception as e:
+        print(f"[windows_bypass] Could not determine default gateway: {e}")
+    return None
+
+
+def _apply_windows_bypass(ips: list[str]) -> None:
+    """Add temporary host routes so QS-Tunnel's traffic bypasses the WireGuard interface.
+
+    Uses ``route add <IP> mask <HOST_ROUTE_MASK> <GATEWAY>``.  Requires Administrator.
+    A non-fatal warning is printed if any route cannot be added.
+    """
+    gateway = _get_default_gateway_windows()
+    if not gateway:
+        print(
+            "[windows_bypass] WARNING: Could not detect default gateway — "
+            "QS-Tunnel traffic may be captured by WireGuard routing.\n"
+            f"  Fix: run  route add <SERVER_IP> mask {_HOST_ROUTE_MASK} <DEFAULT_GATEWAY>"
+            "  as Administrator."
+        )
+        return
+    for ip in ips:
+        try:
+            subprocess.run(
+                ["route", "add", ip, "mask", _HOST_ROUTE_MASK, gateway],
+                check=True, capture_output=True, text=True, timeout=5,
+            )
+            _windows_bypass_ips.append(ip)
+            print(f"[windows_bypass] Route added: {ip} via {gateway}")
+        except subprocess.CalledProcessError as e:
+            stderr = (e.stderr or "").strip()
+            print(
+                f"[windows_bypass] WARNING: Failed to add route for {ip}: "
+                f"{stderr or e}\n"
+                "  Ensure QS-Tunnel is running as Administrator for WireGuard bypass."
+            )
+
+
+def _remove_windows_bypass() -> None:
+    """Remove host routes previously added by :func:`_apply_windows_bypass`."""
+    for ip in _windows_bypass_ips:
+        try:
+            subprocess.run(
+                ["route", "delete", ip, "mask", _HOST_ROUTE_MASK],
+                capture_output=True, text=True, timeout=5,
+            )
+            print(f"[windows_bypass] Route removed: {ip}")
+        except Exception:
+            pass
+
+
+def _setup_windows_bypass_routes() -> None:
+    """Resolve all server hostnames to IPs and install Windows host routes for each.
+
+    Called once at startup on Windows before any outbound connections are made.
+    This is the Windows equivalent of the Linux ``fwmark`` / ``ip rule`` bypass.
+    """
+    bypass: set[str] = set()
+
+    # Registration server
+    try:
+        bypass.add(socket.gethostbyname(server_reg_addr[0]))
+    except OSError as e:
+        print(f"[windows_bypass] Could not resolve registration server host: {e}")
+
+    # NAT keep-alive / spoofed-source IP (always a literal IP)
+    bypass.add(fake_send_ip)
+
+    # VLESS server
+    if use_builtin_vless:
+        try:
+            bypass.add(socket.gethostbyname(vless_info["host"]))
+        except OSError as e:
+            print(f"[windows_bypass] Could not resolve VLESS host: {e}")
+
+    # Public IP detection services — use _IP_SVC_URLS as single source of truth
+    svc_url = _IP_SVC_URLS.get(config.get("my_public_ip", ""))
+    if svc_url:
+        svc_host = urlparse(svc_url).hostname or ""
+        try:
+            bypass.add(socket.gethostbyname(svc_host))
+        except OSError as e:
+            print(f"[windows_bypass] Could not resolve IP-service host {svc_host!r}: {e}")
+
+    if bypass:
+        _apply_windows_bypass(list(bypass))
+        atexit.register(_remove_windows_bypass)
 
 
 def parse_vless_url(url: str) -> dict:
@@ -101,6 +265,10 @@ except json.JSONDecodeError as e:
 
 info_encryption_pass = hashlib.sha256(config["info_encryption_pass"].encode()).digest()
 
+fwmark = int(config.get("fwmark", 0))
+if fwmark:
+    print(f"[init] fwmark={fwmark}: QS-Tunnel sockets will be marked to bypass WireGuard routing")
+
 client_id_bytes = os.urandom(CLIENT_ID_WIDTH)
 print(f"[init] client_id: {client_id_bytes.hex()}")
 
@@ -139,6 +307,7 @@ else:
         raise ValueError("Neither built-in VLESS ('vless_config') nor 'xray_bridge_inbound' is configured")
     xray_bridge_addr = (xray_bridge_str.rsplit(":", 1)[0], int(xray_bridge_str.rsplit(":", 1)[1]))
     xray_bridge_socket = create_v4_udp_dgram_socket(False, None)
+    _apply_fwmark(xray_bridge_socket)
     print(f"[init] Xray bridge inbound: {xray_bridge_addr}")
     vless_info = None
     bridge_host = bridge_port_num = None
@@ -158,6 +327,7 @@ fake_send_port = int(config["fake_send_port"])
 print(f"[init] Spoof source (fake_send_ip:port): {fake_send_ip}:{fake_send_port}")
 
 wan_main_socket = create_v4_udp_dgram_socket(False, ("0.0.0.0", 0))
+_apply_fwmark(wan_main_socket)
 wan_main_socket_port = int(wan_main_socket.getsockname()[1])
 print(f"[init] WAN receive socket bound to port: {wan_main_socket_port}")
 
@@ -232,7 +402,8 @@ async def vless_manager():
     while True:
         try:
             print(f"[vless] Connecting to {ws_url} ...")
-            async with aiohttp.ClientSession(headers=headers) as session:
+            connector = _make_aiohttp_connector()
+            async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
                 async with session.ws_connect(
                     ws_url,
                     ssl=ssl_context,
@@ -356,6 +527,7 @@ async def reg_send(my_public_ip: str):
     """Send registration packets to the QS-Tunnel server every 20 seconds."""
     loop = asyncio.get_running_loop()
     reg_socket = create_v4_udp_dgram_socket(False, None)
+    _apply_fwmark(reg_socket)
     info_plain = (
         socket.inet_pton(socket.AF_INET, my_public_ip) +
         wan_main_socket_port.to_bytes(2, byteorder="big") +
@@ -392,7 +564,8 @@ async def nat_keep_alive():
 
 async def fetch_ip(url: str):
     print(f"[fetch_ip] Fetching public IP from {url}")
-    async with aiohttp.ClientSession() as session:
+    connector = _make_aiohttp_connector()
+    async with aiohttp.ClientSession(connector=connector) as session:
         async with session.get(url) as response:
             response.raise_for_status()
             text = await response.text()
@@ -406,13 +579,17 @@ async def fetch_ip(url: str):
 
 async def main():
     loop = asyncio.get_running_loop()
+
+    # On Windows, WireGuard has no fwmark/SO_MARK equivalent.  Instead, install
+    # explicit host routes for every server IP so QS-Tunnel's traffic bypasses the
+    # WireGuard default route.  Must be done before any outbound connections.
+    if sys.platform == "win32":
+        _setup_windows_bypass_routes()
+
     my_public_ip = config["my_public_ip"]
-    if my_public_ip == "ezping":
-        my_public_ip = await fetch_ip("https://ezping.ir/geoip")
-    elif my_public_ip == "ipnumberia":
-        my_public_ip = await fetch_ip("https://ipnumberia.com/")
-    elif my_public_ip == "ipmyp":
-        my_public_ip = await fetch_ip("https://ipmyp.ir/")
+    svc_url = _IP_SVC_URLS.get(my_public_ip)
+    if svc_url:
+        my_public_ip = await fetch_ip(svc_url)
     else:
         print(f"[main] Using configured public IP: {my_public_ip}")
 

@@ -7,5 +7,6 @@
   "fake_send_ip": "",
   "fake_send_port": 443,
   "my_public_ip": "ezping",
-  "info_encryption_pass": ""
+  "info_encryption_pass": "",
+  "fwmark": 0
 }
