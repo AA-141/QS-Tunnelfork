@@ -37,11 +37,14 @@ if [[ -z "${SERVER_PUBLIC_IP}" ]]; then
   read -rp "Could not auto-detect server public IP. Enter it manually: " SERVER_PUBLIC_IP
 fi
 
+VENV_DIR="${REPO_DIR}/.venv"
+
 echo "[1/8] Installing dependencies..."
 apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-pip wireguard iptables curl
-python3 -m pip install --upgrade pip
-python3 -m pip install -r "${REPO_DIR}/requirements.txt"
+DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv wireguard iptables curl
+python3 -m venv "${VENV_DIR}"
+"${VENV_DIR}/bin/pip" install --upgrade pip
+"${VENV_DIR}/bin/pip" install -r "${REPO_DIR}/requirements.txt"
 
 echo "[2/8] Generating WireGuard keys..."
 install -d -m 700 /etc/wireguard/keys
@@ -99,7 +102,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=${REPO_DIR}
-ExecStart=/usr/bin/python3 ${REPO_DIR}/main_server.py
+ExecStart=${REPO_DIR}/.venv/bin/python3 ${REPO_DIR}/main_server.py
 Restart=always
 RestartSec=2
 
