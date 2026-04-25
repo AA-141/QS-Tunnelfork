@@ -36,11 +36,10 @@ def create_v4_udp_dgram_socket(blocking: bool, bind_addr: tuple[str, int] | None
 def _apply_fwmark(sock: socket.socket) -> None:
     """Set SO_MARK on *sock* so the packet bypasses WireGuard routing rules.
 
-    Requires the process to have CAP_NET_ADMIN (or run as root) on Linux.
-    A failure is logged but not fatal so the tunnel still starts on platforms
-    that do not support SO_MARK (Windows, macOS).
+    Linux only — SO_MARK does not exist on Windows or macOS.
+    Requires CAP_NET_ADMIN (or root).  A failure is logged but not fatal.
     """
-    if not fwmark:
+    if not fwmark or sys.platform != "linux":
         return
     try:
         sock.setsockopt(socket.SOL_SOCKET, _SO_MARK, fwmark)
@@ -52,8 +51,12 @@ def _apply_fwmark(sock: socket.socket) -> None:
 
 
 def _make_aiohttp_connector() -> aiohttp.TCPConnector:
-    """Return a TCPConnector that stamps every TCP socket with SO_MARK when fwmark is set."""
-    if fwmark:
+    """Return a TCPConnector that stamps every TCP socket with SO_MARK when fwmark is set.
+
+    socket_options are only applied on Linux; on other platforms a plain
+    TCPConnector is returned so Windows users are not affected.
+    """
+    if fwmark and sys.platform == "linux":
         try:
             return aiohttp.TCPConnector(
                 socket_options=[(socket.SOL_SOCKET, _SO_MARK, fwmark)]

@@ -155,6 +155,10 @@ Generated client WireGuard config:
 PrivateKey = ${CLIENT_PRIVATE_KEY}
 Address = ${WG_CLIENT_CIDR}
 DNS = 1.1.1.1
+# PostUp/PreDown below mark QS-Tunnel's own sockets so they bypass WireGuard.
+# Required when fwmark is set in config_client.json (Linux clients only).
+PostUp  = ip rule add fwmark 51821 table main priority 100
+PreDown = ip rule del fwmark 51821 table main priority 100
 
 [Peer]
 PublicKey = ${SERVER_PUBLIC_KEY}
@@ -165,4 +169,5 @@ Client QS-Tunnel essentials:
 - server_registration_address: ${SERVER_PUBLIC_IP}:${QS_REG_PORT}
 - bridge_address: ${SERVER_PUBLIC_IP}:${QS_BRIDGE_PORT}
 - info_encryption_pass: ${QS_SECRET}
+- fwmark: 51821   (add to config_client.json — required on Linux for AllowedIPs 0.0.0.0/0)
 EOF
