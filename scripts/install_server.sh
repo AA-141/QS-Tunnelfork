@@ -42,6 +42,7 @@ VENV_DIR="${REPO_DIR}/.venv"
 echo "[1/8] Installing dependencies..."
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv wireguard iptables curl
+modprobe wireguard 2>/dev/null || true
 python3 -m venv "${VENV_DIR}"
 "${VENV_DIR}/bin/pip" install --upgrade pip
 "${VENV_DIR}/bin/pip" install -r "${REPO_DIR}/requirements.txt"
@@ -84,7 +85,15 @@ systemctl stop "wg-quick@${WG_IFACE}" 2>/dev/null || true
 systemctl reset-failed "wg-quick@${WG_IFACE}" 2>/dev/null || true
 ip link delete "${WG_IFACE}" 2>/dev/null || true
 systemctl enable "wg-quick@${WG_IFACE}" >/dev/null
-systemctl start "wg-quick@${WG_IFACE}"
+WG_OK=true
+if ! systemctl start "wg-quick@${WG_IFACE}"; then
+  WG_OK=false
+  echo ""
+  echo "[warning] WireGuard failed to start. To diagnose, run:"
+  echo "  journalctl -xeu wg-quick@${WG_IFACE}.service"
+  echo "[warning] Continuing installation — fix WireGuard manually after setup completes."
+  echo ""
+fi
 
 echo "[6/8] Writing QS-Tunnel server config..."
 cat > "${REPO_DIR}/config_server.json" <<EOF
@@ -122,6 +131,13 @@ if command -v ufw >/dev/null 2>&1; then
   ufw allow "${QS_REG_PORT}/udp" >/dev/null || true
   ufw allow "${QS_BRIDGE_PORT}/udp" >/dev/null || true
   ufw allow "${WG_LISTEN_PORT}/udp" >/dev/null || true
+fi
+
+if [[ "${WG_OK}" = false ]]; then
+  echo ""
+  echo "*** WireGuard did NOT start. Fix it manually, then run:"
+  echo "    systemctl start wg-quick@${WG_IFACE}"
+  echo ""
 fi
 
 cat <<EOF
