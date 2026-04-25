@@ -79,8 +79,12 @@ fi
 sysctl -p >/dev/null
 
 echo "[5/8] Bringing up WireGuard..."
+# Clean up any leftover state from a previous install so restart succeeds
+systemctl stop "wg-quick@${WG_IFACE}" 2>/dev/null || true
+systemctl reset-failed "wg-quick@${WG_IFACE}" 2>/dev/null || true
+ip link delete "${WG_IFACE}" 2>/dev/null || true
 systemctl enable "wg-quick@${WG_IFACE}" >/dev/null
-systemctl restart "wg-quick@${WG_IFACE}"
+systemctl start "wg-quick@${WG_IFACE}"
 
 echo "[6/8] Writing QS-Tunnel server config..."
 cat > "${REPO_DIR}/config_server.json" <<EOF

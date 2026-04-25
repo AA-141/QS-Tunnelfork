@@ -105,6 +105,39 @@ Then start your VPN client (for WireGuard, point endpoint to `127.0.0.1:10443`).
 
 ---
 
+## Recovering lost keys or configuration
+
+If you lose the output from the install script, all generated files are still on the server:
+
+| What | Path |
+|------|------|
+| Server WireGuard private key | `/etc/wireguard/keys/server_private.key` |
+| Server WireGuard public key | `/etc/wireguard/keys/server_public.key` |
+| Client WireGuard private key | `/etc/wireguard/keys/client_private.key` |
+| Client WireGuard public key | `/etc/wireguard/keys/client_public.key` |
+| WireGuard interface config (server) | `/etc/wireguard/wg0.conf` (or the interface name you chose) |
+| QS-Tunnel server config (shared secret, ports) | `config_server.json` in the repo directory |
+
+To display the client WireGuard config again (server-side):
+
+```bash
+echo "[Interface]"
+echo "PrivateKey = $(cat /etc/wireguard/keys/client_private.key)"
+echo "Address = <WG_CLIENT_CIDR>"
+echo "DNS = 1.1.1.1"
+echo ""
+echo "[Peer]"
+echo "PublicKey = $(cat /etc/wireguard/keys/server_public.key)"
+echo "AllowedIPs = 0.0.0.0/0, ::/0"
+echo "Endpoint = 127.0.0.1:10443"
+```
+
+The QS-Tunnel shared secret is the `info_decryption_pass` value in `config_server.json`. Use it as `info_encryption_pass` in `config_client.json`.
+
+If you need to reinstall from scratch, just re-run `sudo bash scripts/install_server.sh` — it will cleanly replace all keys and configs.
+
+---
+
 ## Notes
 
 - QS-Tunnel is a UDP forwarder, not an encryption protocol by itself.
