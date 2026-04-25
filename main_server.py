@@ -23,8 +23,16 @@ def create_v4_udp_dgram_socket(blocking: bool, bind_addr: tuple[str, int] | None
     return s
 
 
-with open(os.path.join(os.path.dirname(sys.argv[0]), "config_server.json")) as f:
-    config = json.loads(f.read())
+try:
+    with open(os.path.join(os.path.dirname(sys.argv[0]), "config_server.json"), encoding="utf-8-sig") as f:
+        config = json.loads(f.read())
+except FileNotFoundError:
+    print("[error] config_server.json not found. Make sure it exists in the same directory as main_server.py.")
+    sys.exit(1)
+except json.JSONDecodeError as e:
+    print(f"[error] Failed to parse config_server.json: {e}")
+    print("[error] Ensure the file is valid JSON and saved with UTF-8 encoding (with or without BOM).")
+    sys.exit(1)
 
 info_decryption_pass = hashlib.sha256(config["info_decryption_pass"].encode()).digest()
 

@@ -88,8 +88,16 @@ def build_vless_udp_request_header(uuid_bytes: bytes, dest_host: str, dest_port:
     return bytes(header)
 
 
-with open(os.path.join(os.path.dirname(sys.argv[0]), "config_client.json")) as f:
-    config = json.loads(f.read())
+try:
+    with open(os.path.join(os.path.dirname(sys.argv[0]), "config_client.json"), encoding="utf-8-sig") as f:
+        config = json.loads(f.read())
+except FileNotFoundError:
+    print("[error] config_client.json not found. Make sure it exists in the same directory as main_client.py.")
+    sys.exit(1)
+except json.JSONDecodeError as e:
+    print(f"[error] Failed to parse config_client.json: {e}")
+    print("[error] Ensure the file is valid JSON and saved with UTF-8 encoding (with or without BOM).")
+    sys.exit(1)
 
 info_encryption_pass = hashlib.sha256(config["info_encryption_pass"].encode()).digest()
 
