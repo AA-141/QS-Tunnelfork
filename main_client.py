@@ -2,6 +2,7 @@ import asyncio
 import atexit
 import random
 import socket
+import struct
 import json
 import os
 import subprocess
@@ -50,6 +51,131 @@ def _apply_fwmark(sock: socket.socket) -> None:
             f"[fwmark] WARNING: Could not set SO_MARK={fwmark} on socket: {e}. "
             "Run as root or grant CAP_NET_ADMIN for WireGuard bypass to work."
         )
+
+
+# ---------------------------------------------------------------------------
+# DNS resolution that bypasses WireGuard routing via SO_MARK
+# ---------------------------------------------------------------------------
+
+# Default DNS server used when resolving hostnames through a marked socket.
+_BYPASS_DNS_SERVER = "1.1.1.1"
+_BYPASS_DNS_PORT = 53
+
+
+def _build_dns_query(hostname: str) -> tuple[bytes, int]:
+    """Build a minimal DNS A-record UDP query for *hostname*.
+
+    Returns ``(packet_bytes, query_id)`` where *query_id* can be matched
+    against the response.
+    """
+    qid = random.randint(1, 65535)
+    # Header: ID, FLAGS=standard query (RD=1), QDCOUNT=1, rest 0
+    header = struct.pack(">HHHHHH", qid, 0x0100, 1, 0, 0, 0)
+    question = b""
+    for label in hostname.rstrip(".").split("."):
+        enc = label.encode("ascii")
+        question += bytes([len(enc)]) + enc
+    question += b"\x00"             # root label
+    question += struct.pack(">HH", 1, 1)  # QTYPE=A, QCLASS=IN
+    return header + question, qid
+
+
+def _parse_dns_a_response(data: bytes, expected_id: int) -> str | None:
+    """Parse a DNS UDP response and return the first A-record IP string.
+
+    Returns *None* if the response is invalid, does not match *expected_id*,
+    or contains no A records.
+    """
+    if len(data) < 12:
+        return None
+    resp_id, flags, qdcount, ancount = struct.unpack(">HHHH", data[:8])
+    if resp_id != expected_id or not (flags & 0x8000):  # QR bit must be set
+        return None
+    if ancount == 0:
+        return None
+
+    def _skip_name(pos: int) -> int:
+        """Advance *pos* past a DNS name (handles pointer compression)."""
+        while pos < len(data):
+            length = data[pos]
+            if length & 0xC0 == 0xC0:   # compressed pointer — 2 bytes total
+                return pos + 2
+            elif length == 0:           # root label
+                return pos + 1
+            else:
+                pos += 1 + length
+        return pos
+
+    # Skip the question section
+    pos = 12
+    for _ in range(qdcount):
+        pos = _skip_name(pos)
+        pos += 4  # QTYPE + QCLASS
+
+    # Parse answer records looking for the first A record
+    for _ in range(ancount):
+        if pos >= len(data):
+            break
+        pos = _skip_name(pos)
+        if pos + 10 > len(data):
+            break
+        rtype, rclass, _ttl, rdlen = struct.unpack(">HHIH", data[pos: pos + 10])
+        pos += 10
+        if rtype == 1 and rclass == 1 and rdlen == 4:   # A record, IN class
+            return ".".join(str(data[pos + i]) for i in range(4))
+        pos += rdlen
+
+    return None
+
+
+async def _resolve_host_bypass_wg(
+    hostname: str, loop: asyncio.AbstractEventLoop
+) -> str:
+    """Resolve *hostname* to an IPv4 address, bypassing WireGuard routing.
+
+    On Linux with *fwmark* configured a raw DNS A-query is sent over a UDP
+    socket that has ``SO_MARK`` stamped on it, so the Linux policy-routing
+    rules used by WireGuard do *not* apply.  This is necessary because the
+    normal OS resolver (``getaddrinfo``) ignores ``SO_MARK``, meaning DNS
+    queries would otherwise be swallowed by the WireGuard interface and fail
+    whenever the VLESS tunnel is not yet established.
+
+    Falls back to ``loop.getaddrinfo()`` when *fwmark* is not set, or on
+    non-Linux platforms.
+    """
+    # If hostname is already a literal IP address, return it as-is.
+    try:
+        socket.inet_aton(hostname)
+        return hostname
+    except OSError:
+        pass
+
+    if not fwmark or sys.platform != "linux":
+        # No bypass needed (or not supported): use the normal OS resolver.
+        results = await loop.getaddrinfo(hostname, None, family=socket.AF_INET)
+        return results[0][4][0]
+
+    query, qid = _build_dns_query(hostname)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setblocking(False)
+    _apply_fwmark(sock)
+    try:
+        await loop.sock_sendto(sock, query, (_BYPASS_DNS_SERVER, _BYPASS_DNS_PORT))
+        data = await asyncio.wait_for(loop.sock_recv(sock, 512), timeout=5.0)
+        ip = _parse_dns_a_response(data, qid)
+        if ip:
+            return ip
+        raise OSError(f"No A record in DNS response for {hostname!r}")
+    except Exception as exc:
+        # Best-effort fallback to the OS resolver.
+        print(
+            f"[vless] Marked-socket DNS lookup failed for {hostname!r}: {exc}; "
+            "falling back to OS resolver"
+        )
+        results = await loop.getaddrinfo(hostname, None, family=socket.AF_INET)
+        return results[0][4][0]
+    finally:
+        sock.close()
 
 
 def _make_aiohttp_connector() -> aiohttp.TCPConnector:
@@ -389,7 +515,9 @@ async def vless_manager():
     """
     security = vless_info["security"]
     scheme = "wss" if security in ("tls", "reality") else "ws"
-    ws_url = f"{scheme}://{vless_info['host']}:{vless_info['port']}{vless_info['path']}"
+    host = vless_info["host"]
+    port = vless_info["port"]
+    path = vless_info["path"]
     headers = {"Host": vless_info["ws_host_header"]}
     ssl_context = None
     if scheme == "wss":
@@ -397,10 +525,27 @@ async def vless_manager():
         ssl_context.check_hostname = False
         ssl_context.verify_mode = ssl.CERT_NONE
 
-    print(f"[vless] Manager started — will connect to {ws_url}")
+    print(f"[vless] Manager started — will connect to {scheme}://{host}:{port}{path}")
 
+    loop = asyncio.get_running_loop()
     while True:
         try:
+            # Resolve the hostname through a WireGuard-bypassing DNS query so
+            # that getaddrinfo (which ignores SO_MARK) does not send DNS traffic
+            # through the WireGuard tunnel.  We then connect to the resolved IP
+            # and supply the original hostname via the Host header so that
+            # SNI / virtual-hosting continues to work.
+            try:
+                resolved_ip = await _resolve_host_bypass_wg(host, loop)
+            except Exception as e:
+                print(f"[vless] DNS resolution failed for {host!r}: {e}")
+                print("[vless] Reconnecting in 3 seconds...")
+                await asyncio.sleep(3)
+                continue
+
+            ws_url = f"{scheme}://{resolved_ip}:{port}{path}"
+            if resolved_ip != host:
+                print(f"[vless] Resolved {host} → {resolved_ip}")
             print(f"[vless] Connecting to {ws_url} ...")
             connector = _make_aiohttp_connector()
             async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
